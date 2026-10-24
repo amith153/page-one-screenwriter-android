@@ -2,11 +2,11 @@
 
 **Write screenplays. Plan the story. Keep writing.**
 
-Page One is a screenwriting app for your phone: industry-format screenplays, index cards, story structure, Script Doctor, production tools (revisions, locked pages, reports) and writing goals, sprints and streaks. It opens the same files as the [Page One desktop app](https://github.com/amith153/page-one) and can keep your projects and writing stats in sync with it.
+Page One is a screenwriting app for your phone: industry-format screenplays, index cards, story structure, Script Doctor, production tools (revisions, locked pages, reports) and writing goals, sprints and streaks. It opens the same files as the [Page One desktop app](https://github.com/amith153/page-one-screenwriter) and can keep your projects and writing stats in sync with it.
 
 ## Download
 
-Get the latest APK from the [Releases page](https://github.com/amith153/page-one-android/releases/latest) (`PageOne-…-android.apk`, Android 8.0 or newer).
+Get the latest APK from the [Releases page](https://github.com/amith153/page-one-screenwriter-android/releases/latest) (`PageOne-…-android.apk`, Android 8.0 or newer).
 
 1. Open the file on your phone.
 2. When asked, allow "install unknown apps" for your browser or file manager.
@@ -28,8 +28,8 @@ The downloadable APK contains **no server keys**. Writing, planning, exporting t
 You need Android Studio (or JDK 17 and the Android SDK).
 
 ```bash
-git clone https://github.com/amith153/page-one-android.git
-cd page-one-android
+git clone https://github.com/amith153/page-one-screenwriter-android.git
+cd page-one-screenwriter-android
 ./gradlew assembleDebug          # app/build/outputs/apk/debug/app-debug.apk
 ```
 
