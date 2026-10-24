@@ -85,10 +85,12 @@ fun Onboarding(onDone: (openSample: Boolean) -> Unit) {
     var goal by remember { mutableStateOf(AppGraph.settings.state.value.dailyGoal.takeIf { it > 0 } ?: 500) }
     var remind by remember { mutableStateOf(true) }
     var hour by remember { mutableStateOf(19) }
+    var minute by remember { mutableStateOf(0) }
+    var picking by remember { mutableStateOf(false) }
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { Notifier.scheduleAll(ctx) }
 
     fun finish(sample: Boolean) {
-        AppGraph.settings.update { it.copy(onboarded = true, dailyGoal = goal, dailyReminder = remind, reminderHour = hour, reminderMinute = 0) }
+        AppGraph.settings.update { it.copy(onboarded = true, dailyGoal = goal, dailyReminder = remind, reminderHour = hour, reminderMinute = minute) }
         if (remind && Build.VERSION.SDK_INT >= 33 && !Notifier.canPost(ctx)) ask.launch(Manifest.permission.POST_NOTIFICATIONS)
         Notifier.scheduleAll(ctx)
         onDone(sample)
@@ -138,9 +140,8 @@ fun Onboarding(onDone: (openSample: Boolean) -> Unit) {
                             }
                             if (remind) {
                                 Spacer(Modifier.height(8.dp))
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    listOf(7 to "7 am", 9 to "9 am", 12 to "Noon", 19 to "7 pm", 21 to "9 pm").forEach { (h, l) -> FilterChip(hour == h, { hour = h }, { Text(l) }) }
-                                }
+                                OutlinedButton(onClick = { picking = true }) { Text("At ${com.amit.pageone.ui.components.timeLabel(hour, minute)} — change") }
+                                if (picking) com.amit.pageone.ui.components.ReminderTimeDialog(hour, minute, { picking = false }) { h, m -> hour = h; minute = m; picking = false }
                             }
                         }
                         Spacer(Modifier.height(20.dp))

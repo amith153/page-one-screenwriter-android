@@ -298,7 +298,20 @@ private fun NotificationsSection(s: AppSettings, upd: ((AppSettings) -> AppSetti
             }) { Text("Turn on") }
         }
         Toggle("Daily writing reminder", "A nudge at your writing time — skipped once you've hit today's goal", s.dailyReminder) { v -> set { it.copy(dailyReminder = v) } }
-        if (s.dailyReminder) Choice("Remind me at", listOf(7, 9, 12, 17, 19, 21, 22), s.reminderHour, { h -> if (h == 12) "12 pm" else if (h < 12) "$h am" else "${h - 12} pm" }) { v -> set { it.copy(reminderHour = v, reminderMinute = 0) } }
+        if (s.dailyReminder) {
+            var picking by remember { mutableStateOf(false) }
+            Row(Modifier.fillMaxWidth().clickable { picking = true }.padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Remind me at", style = MaterialTheme.typography.bodyLarge)
+                    Text("Tap to choose the time", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                }
+                Text(com.amit.pageone.ui.components.timeLabel(s.reminderHour, s.reminderMinute), style = MaterialTheme.typography.titleMedium, color = cs.primary)
+            }
+            if (picking) com.amit.pageone.ui.components.ReminderTimeDialog(s.reminderHour, s.reminderMinute, { picking = false }) { h, m ->
+                picking = false
+                set { it.copy(reminderHour = h, reminderMinute = m) }
+            }
+        }
         Toggle("Deadline reminders", "Every day while a script has a finish date: pages per day, ahead or behind, and countdowns at 2 weeks, 1 week, 3 days and the day before", s.deadlineReminders) { v -> set { it.copy(deadlineReminders = v) } }
         Toggle("Streak at risk", "8:30 pm, if you haven't written yet and a streak is going", s.streakAlerts) { v -> set { it.copy(streakAlerts = v) } }
         Toggle("Sprint bell", "When a writing sprint ends, even with the app closed", s.sprintAlerts) { v -> set { it.copy(sprintAlerts = v) } }
