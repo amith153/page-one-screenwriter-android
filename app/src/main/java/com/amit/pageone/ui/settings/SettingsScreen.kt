@@ -324,7 +324,13 @@ private fun SyncSection() {
             Text("Desktop sync", style = MaterialTheme.typography.bodyLarge)
             Text("Your projects, daily words, streak, sprints and goal — the same on your phone and your computer.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
             Spacer(Modifier.height(10.dp))
-            if (st.space == null) {
+            if (!AppGraph.collab.server.value.isValid) {
+                Text("Sync is switched off in this download.", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Syncing needs a small server that you set up yourself (a free Firebase project), and this download doesn't include one. Everything else works without it, and your scripts stay on this phone. To turn sync on, build the app with your own server details; the steps are in the README on GitHub.",
+                    style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+                )
+            } else if (st.space == null) {
                 androidx.compose.material3.Button(onClick = { run { code = sync.link() } }, enabled = !busy) { Text("Show a code for my computer") }
                 if (code.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
