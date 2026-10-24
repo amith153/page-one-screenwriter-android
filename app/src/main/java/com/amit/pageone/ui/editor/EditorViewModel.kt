@@ -137,7 +137,6 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
 
     init {
         AppGraph.stopHooks.add(stopHook)
-        AppGraph.openScriptId = scriptId
         viewModelScope.launch {
             val s = store.load(scriptId)?.let { it.copy(extras = it.extras.prune(it.elements)) }
             if (s != null) {
@@ -159,7 +158,6 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
 
     override fun onCleared() {
         AppGraph.stopHooks.remove(stopHook)
-        if (AppGraph.openScriptId == scriptId) { AppGraph.openScriptId = null; AppGraph.sync.kick() }
         live?.stop(); live = null
         flush()
         super.onCleared()

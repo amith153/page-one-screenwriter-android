@@ -59,7 +59,14 @@ class ScriptStore(context: Context) {
         val metas = files.mapNotNull { f ->
             val id = f.nameWithoutExtension
             index[id]?.takeIf { it.modifiedAt >= f.lastModified() - 2000 } ?: runCatching {
-                metaOf(decode(JSONObject(f.readText())), pages = 0)
+                decode(JSONObject(f.readText())).let { sc ->
+                    // A file that arrived from elsewhere (Wi-Fi sync): count its pages here.
+                    val pages = runCatching {
+                        com.amit.pageone.core.Paginator(AppGraph.settings.state.value.layout)
+                            .paginate(sc.elements, com.amit.pageone.core.Locking.forcedBreaks(sc.elements, sc.extras.lock)).pageCount
+                    }.getOrDefault(0)
+                    metaOf(sc, pages = pages)
+                }
             }.getOrNull()
         }
         writeIndex(metas)

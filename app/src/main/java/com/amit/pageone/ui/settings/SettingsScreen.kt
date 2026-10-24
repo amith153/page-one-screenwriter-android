@@ -307,70 +307,53 @@ private fun NotificationsSection(s: AppSettings, upd: ((AppSettings) -> AppSetti
     }
 }
 
-/** Sync: link this phone with the Page One desktop app (projects, daily words, streak, sprints, goal). */
+/** Sync: pair this phone with the Page One desktop app (or another phone) over Wi-Fi. */
 @Composable
 private fun SyncSection() {
     val sync = AppGraph.sync
     val st by sync.state.collectAsState()
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val cs = MaterialTheme.colorScheme
-    var code by remember { mutableStateOf("") }
+    var address by remember { mutableStateOf("") }
     var typed by remember { mutableStateOf("") }
     var err by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     fun run(f: suspend () -> Unit) { scope.launch { busy = true; err = ""; try { f() } catch (e: Exception) { err = e.message ?: "Something went wrong" } finally { busy = false } } }
     Section("Sync") {
         Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
-            Text("Desktop sync", style = MaterialTheme.typography.bodyLarge)
-            Text("Your projects, daily words, streak, sprints and goal — the same on your phone and your computer.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            Text("Wi-Fi sync", style = MaterialTheme.typography.bodyLarge)
+            Text("Your projects, daily words, streak, sprints and goal, the same on every device. Over your own Wi-Fi: no account, no server.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
             Spacer(Modifier.height(10.dp))
-            if (!AppGraph.collab.server.value.isValid) {
-                Text("Sync is switched off in this download.", style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    "Syncing needs a small server that you set up yourself (a free Firebase project), and this download doesn't include one. Everything else works without it, and your scripts stay on this phone. To turn sync on, build the app with your own server details; the steps are in the README on GitHub.",
-                    style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
-                )
-            } else if (st.space == null) {
-                androidx.compose.material3.Button(onClick = { run { code = sync.link() } }, enabled = !busy) { Text("Show a code for my computer") }
-                if (code.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(code, style = MaterialTheme.typography.headlineSmall, color = cs.primary)
-                    Text("Type it on the computer: Settings › Sync.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
-                }
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = typed, onValueChange = { typed = it }, singleLine = true, placeholder = { Text("K7QP-X2MA") },
-                    shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(6.dp))
-                androidx.compose.material3.OutlinedButton(
-                    enabled = !busy && com.amit.pageone.collab.Hub.findCode(typed) != null,
-                    onClick = {
-                        run {
-                            val c = com.amit.pageone.collab.Hub.findCode(typed) ?: return@run
-                            val inv = com.amit.pageone.collab.Hub.resolve(AppGraph.context, AppGraph.collab.server.value, c)
-                                ?: error("That code wasn't found or has expired. Make a new one on your computer.")
-                            check(inv.scriptId.startsWith("sync-")) { "That's a join code for a shared script, not a sync code." }
-                            sync.adopt(inv.scriptId); typed = ""
-                        }
-                    },
-                ) { Text("Use a code from my computer") }
-            } else {
+            if (st.peers.isNotEmpty()) {
                 val label = when (st.phase) {
-                    com.amit.pageone.collab.SyncSpace.Phase.ERROR -> st.message.ifBlank { "Couldn't reach the sync server" }
-                    com.amit.pageone.collab.SyncSpace.Phase.WORKING -> st.message.ifBlank { "Syncing…" }
-                    com.amit.pageone.collab.SyncSpace.Phase.CONNECTING -> "Connecting…"
+                    com.amit.pageone.collab.SyncSpace.Phase.ERROR -> st.message.ifBlank { "Something went wrong" }
+                    com.amit.pageone.collab.SyncSpace.Phase.WORKING -> "Syncing…"
+                    com.amit.pageone.collab.SyncSpace.Phase.WAITING -> st.message.ifBlank { "Waiting for your other device…" }
                     else -> if (st.lastAt > 0) "Up to date · " + android.text.format.DateUtils.getRelativeTimeSpanString(st.lastAt, System.currentTimeMillis(), android.text.format.DateUtils.SECOND_IN_MILLIS) else "Up to date"
                 }
                 Text(label, style = MaterialTheme.typography.bodyMedium, color = if (st.phase == com.amit.pageone.collab.SyncSpace.Phase.ERROR) cs.error else cs.primary)
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    androidx.compose.material3.OutlinedButton(onClick = { sync.syncNow() }) { Text("Sync now") }
-                    androidx.compose.material3.OutlinedButton(onClick = { run { code = sync.link() } }, enabled = !busy) { Text("Code for another device") }
+                st.peers.forEach { p ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(p.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        androidx.compose.material3.TextButton(onClick = { sync.unpair(p.id) }) { Text("Unpair") }
+                    }
                 }
-                if (code.isNotEmpty()) { Spacer(Modifier.height(8.dp)); Text(code, style = MaterialTheme.typography.headlineSmall, color = cs.primary) }
-                androidx.compose.material3.TextButton(onClick = { sync.unlink(); code = "" }) { Text("Unlink") }
+                androidx.compose.material3.OutlinedButton(onClick = { sync.syncNow() }) { Text("Sync now") }
+                Spacer(Modifier.height(10.dp))
             }
+            androidx.compose.material3.Button(onClick = { run { sync.startPairing() } }, enabled = !busy) { Text(if (st.peers.isEmpty()) "Show a code for my computer" else "Add another device") }
+            st.pairing?.let { pr ->
+                Spacer(Modifier.height(8.dp))
+                Text(pr.code, style = MaterialTheme.typography.headlineSmall, color = cs.primary)
+                Text("Address: " + pr.addresses.joinToString(" or ") + ". Keep Page One open here until it connects.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(value = address, onValueChange = { address = it }, singleLine = true, placeholder = { Text("Address, like 192.168.1.5") }, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(value = typed, onValueChange = { typed = it }, singleLine = true, placeholder = { Text("Code, like K7QP-X2MA") }, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(6.dp))
+            androidx.compose.material3.OutlinedButton(enabled = !busy && address.isNotBlank() && typed.isNotBlank(), onClick = { run { sync.pairWith(address, typed); address = ""; typed = "" } }) { Text("Use a code from my computer") }
+            Text("Both devices must be on the same Wi-Fi (a phone's hotspot works).", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
             if (err.isNotEmpty()) { Spacer(Modifier.height(6.dp)); Text(err, style = MaterialTheme.typography.bodySmall, color = cs.error) }
         }
     }

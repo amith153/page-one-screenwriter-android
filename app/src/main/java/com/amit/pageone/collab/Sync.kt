@@ -1,24 +1,16 @@
 package com.amit.pageone.collab
 
 import android.content.Context
-import com.amit.pageone.core.Comment
-import com.amit.pageone.core.Element
-import com.amit.pageone.core.ElementType
-import com.amit.pageone.core.Ordering
-import com.amit.pageone.core.Script
-import com.amit.pageone.core.ScriptExtras
-import com.amit.pageone.core.TitlePage
+import com.amit.pageone.core.Locking
+import com.amit.pageone.core.Paginator
 import com.amit.pageone.data.Accent
 import com.amit.pageone.data.AppGraph
-import com.amit.pageone.data.ExtrasCodec
 import com.amit.pageone.data.ScriptMeta
 import com.amit.pageone.data.ScriptStore
 import com.amit.pageone.data.SprintRecord
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.ListenerRegistration
-import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,422 +18,503 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.net.Inet4Address
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
+import java.net.ServerSocket
+import java.net.Socket
 import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Phone and computer, one writer: projects, daily words, streak, sprints, name and goal follow you
- * between devices. The desktop app's `collab/sync.ts` and `state/sync.ts` are the same thing.
+ * Wi-Fi sync between your devices: projects, daily words, streak, sprints, name, goal and accent follow
+ * you between this phone and your computer (or another phone), directly over your own network. No server,
+ * no account, no keys. The desktop app's `src/state/sync.ts` speaks the same protocol.
  *
- * Both devices join one private "sync space" on the live-sync server, found with an 8-letter pairing
- * code (the same invite mechanism as join codes), and keep these in it:
+ * Pairing: one device shows an 8-letter code (and its address), the other types both. They then share a
+ * secret and talk whenever both apps are open on the same network (a phone's hotspot works too).
  *
- *   scripts/sync-{space}                      pf: your name, daily goal and accent (json)
- *   scripts/sync-{space}/lib/{scriptId}       one line per project: title, pages, words, when it last changed
- *   scripts/sync-{space}/days/{yyyy-MM-dd}    words written that day, per device: d.{deviceId}
- *   scripts/sync-{space}/sprints/{startAt}    finished writing sprints
- *
- * The projects' own lines live where live co-writing keeps them (scripts/{scriptId}/elements…), so an
- * open project is live between your devices like a shared one (see CollabStore.isLive), and the
- * library entry says which projects exist and which copy is newer. Nothing here needs a Firestore
- * rule beyond the existing `scripts` ones.
+ * Every 15 seconds, and a moment after you save, each device that knows a partner trades "manifests"
+ * (which projects it has and when each changed, its words per day, sprints, goal) and then moves the
+ * projects that differ, newest copy winning. A copy that would be overwritten while it has changes the
+ * other side never saw is first kept under Versions as "Before Wi-Fi sync". Deleting a project leaves a
+ * note that tells the other devices to delete theirs.
  */
 class SyncSpace(private val context: Context) {
 
-    enum class Phase { OFF, CONNECTING, SYNCED, WORKING, ERROR }
-    data class State(val space: String?, val phase: Phase, val message: String = "", val lastAt: Long = 0L)
+    enum class Phase { OFF, WAITING, WORKING, SYNCED, ERROR }
+    data class Peer(val id: String, val name: String, val secret: String, val ip: String, val lastAt: Long)
+    data class Pairing(val code: String, val addresses: List<String>, val until: Long)
+    data class State(val peers: List<Peer>, val phase: Phase, val message: String = "", val lastAt: Long = 0L, val pairing: Pairing? = null)
 
-    private data class Entry(
+    private class Entry(
         val id: String, val title: String, val author: String, val modifiedAt: Long, val createdAt: Long, val pages: Int,
         val scenes: Int, val words: Int, val coverColor: Int, val logline: String, val deleted: Boolean,
     )
 
-    private class Remote(val elements: List<Element>, val title: String, val tp: TitlePage?, val extras: ScriptExtras?, val comments: List<Comment>)
-
     private val p = context.getSharedPreferences("pageone_sync", Context.MODE_PRIVATE)
     private val scope get() = AppGraph.appScope
-    val device: String = p.getString("device", null) ?: UUID.randomUUID().toString().take(8).also { p.edit().putString("device", it).apply() }
+    val device: String = p.getString("device", null) ?: UUID.randomUUID().toString().replace("-", "").take(12).also { p.edit().putString("device", it).apply() }
 
-    private val _state = MutableStateFlow(State(p.getString("space", null), if (p.getString("space", null) != null) Phase.CONNECTING else Phase.OFF))
+    private val tomb = ConcurrentHashMap<String, Long>().apply { readMap("tomb").forEach { (k, v) -> put(k, v.toLong()) } }
+    private val syncedAt = ConcurrentHashMap<String, Long>().apply { readMap("syncedAt").forEach { (k, v) -> put(k, v.toLong()) } }
+    /** Words per day on other devices: deviceId → day → words. */
+    private val otherDays = ConcurrentHashMap<String, ConcurrentHashMap<String, Int>>()
+    private var prefsAt = p.getLong("prefsAt", 0L)
+
+    private val _state = MutableStateFlow(State(readPeers(), Phase.OFF))
     val state: StateFlow<State> = _state.asStateFlow()
 
-    /** With sync on, every project is live between your own devices. */
-    val active: Boolean get() = _state.value.space != null
+    /** With a partner paired, sync is on. */
+    val active: Boolean get() = _state.value.peers.isNotEmpty()
 
-    private val regs = ArrayList<ListenerRegistration>()
-    @Volatile private var remote: Map<String, Entry> = emptyMap()
-    private val lock = Mutex()
     private val applying = ConcurrentHashMap.newKeySet<String>()
-    private val timers = HashMap<String, Job>()
-    private var prefsJob: Job? = null
-    private var prefsSeen = false
+    private val lock = Mutex()
+    private var server: ServerSocket? = null
+    private var pairingTries = 0
+    private var soonJob: Job? = null
+    private var nextScan = 0L
+    @Volatile private var applyingPrefs = false
 
-    private val cfg get() = AppGraph.collab.server.value
-    private val db get() = Hub.firestore(context, cfg)
-    private fun spaceRef(space: String) = db.collection("scripts").document(space)
+    private fun update(f: (State) -> State) { _state.value = f(_state.value) }
+    private fun myName() = AppGraph.collab.name.value.ifBlank { android.os.Build.MODEL ?: "Phone" }
 
-    private fun set(f: (State) -> State) { _state.value = f(_state.value) }
-    private fun fail(e: Throwable) = set { it.copy(phase = Phase.ERROR, message = e.message ?: "Couldn't reach the sync server") }
+    // ------------------------------------------------------------------ storage
+
+    private fun readMap(key: String): Map<String, Number> = runCatching {
+        val o = JSONObject(p.getString(key, "{}")!!)
+        o.keys().asSequence().associateWith { o.getLong(it) as Number }
+    }.getOrDefault(emptyMap())
+
+    private fun readPeers(): List<Peer> = runCatching {
+        val a = JSONArray(p.getString("peers", "[]"))
+        (0 until a.length()).map { i -> a.getJSONObject(i).let { Peer(it.getString("id"), it.optString("name"), it.getString("secret"), it.optString("ip"), it.optLong("lastAt")) } }
+    }.getOrDefault(emptyList())
+
+    private fun persist() {
+        val e = p.edit()
+        e.putString("peers", JSONArray().also { a -> _state.value.peers.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name).put("secret", it.secret).put("ip", it.ip).put("lastAt", it.lastAt)) } }.toString())
+        e.putString("tomb", JSONObject(tomb.mapKeys { it.key }.mapValues { it.value }).toString())
+        e.putString("syncedAt", JSONObject(syncedAt.mapKeys { it.key }.mapValues { it.value }).toString())
+        e.putLong("prefsAt", prefsAt)
+        e.apply()
+    }
+
+    init {
+        runCatching {
+            val o = JSONObject(p.getString("otherDays", "{}")!!)
+            o.keys().forEach { dev -> val per = o.getJSONObject(dev); val m = ConcurrentHashMap<String, Int>(); per.keys().forEach { m[it] = per.getInt(it) }; otherDays[dev] = m }
+        }
+    }
+
+    private fun persistDays() {
+        val o = JSONObject(); otherDays.forEach { (dev, m) -> o.put(dev, JSONObject(m as Map<*, *>)) }
+        p.edit().putString("otherDays", o.toString()).apply()
+    }
 
     /** Hook everything up; called once the app's stores exist. */
     fun init() {
-        AppGraph.store.onSaved = { m -> saved(m) }
-        AppGraph.goals.onDay = { day, words -> dayChanged(day, words) }
-        AppGraph.sprints.onRecorded = { r -> scope.launch { runCatching { putSprint(r) } } }
+        AppGraph.store.onSaved = { m -> if (m.id !in applying) soon(3000) }
+        AppGraph.goals.onDay = { _, _ -> soon(5000) }
+        AppGraph.sprints.onRecorded = { soon(1000) }
         AppGraph.settings.onPrefsChanged = { prefsChanged() }
         AppGraph.collab.onNameChanged = { prefsChanged() }
-        if (active) scope.launch { delay(1200); start() }
+        recomputeOthers()
+        scope.launch {
+            while (true) {
+                delay(15_000)
+                if (active) soon(0)
+            }
+        }
+        if (active) scope.launch { delay(1500); runCatching { ensureServing() }; soon(1500) }
     }
 
     // ------------------------------------------------------------------ pairing
 
-    /** A code to type on the other device. Makes the sync space the first time. */
-    suspend fun link(): String {
-        val c = cfg
-        check(c.isValid) { "Sync needs the live-sync server, which this copy of Page One was built without." }
-        Hub.uid(context, c)
-        if (_state.value.space == null) {
-            val sp = newSpaceId()
-            spaceRef(sp).set(mapOf("sync" to true, "updatedAt" to FieldValue.serverTimestamp()), SetOptions.merge()).await()
-            p.edit().putString("space", sp).apply()
-            set { it.copy(space = sp, phase = Phase.CONNECTING, message = "") }
-            start()
-        }
-        return Hub.pretty(Hub.codeFor(context, c, _state.value.space!!, "Page One sync", AppGraph.collab.displayName()))
-    }
-
-    /** Join the space a pairing code points at. */
-    suspend fun adopt(space: String) {
-        val c = cfg
-        check(c.isValid) { "Sync needs the live-sync server, which this copy of Page One was built without." }
-        Hub.uid(context, c)
-        val exists = runCatching { spaceRef(space).get().await().exists() }.getOrDefault(true)
-        check(exists) { "That sync code doesn't point anywhere any more. Make a new one on your other device." }
-        if (_state.value.space != null && _state.value.space != space) stop()
-        p.edit().putString("space", space).apply()
-        set { it.copy(space = space, phase = Phase.CONNECTING, message = "") }
-        start()
-    }
-
-    fun unlink() {
-        stop()
-        p.edit().remove("space").apply()
-        AppGraph.goals.setOthers(emptyMap())
-        set { State(null, Phase.OFF) }
-    }
-
-    /** Run a pass now (the editor closed, the app came back): catches up on what was skipped while a script was open. */
-    fun kick() { if (active && remote.isNotEmpty()) scope.launch { reconcileSafely() } }
-
-    fun syncNow() { if (active) { remote = emptyMap(); stop(); start() } }
-
-    private fun stop() {
-        regs.forEach { it.remove() }; regs.clear()
-        prefsSeen = false
-        prefsJob?.cancel()
-    }
-
-    private fun newSpaceId(): String {
+    /** Show a code (and this phone's address) for another device to type. */
+    suspend fun startPairing(): Pairing = withContext(Dispatchers.IO) {
+        ensureServing()
+        val addr = addresses()
+        check(addr.isNotEmpty()) { "This phone isn't on a Wi-Fi network." }
+        val chars = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
         val r = SecureRandom()
-        return "sync-" + (1..12).joinToString("") { "%02x".format(r.nextInt(256)) }
+        val raw = (1..8).map { chars[r.nextInt(chars.length)] }.joinToString("")
+        val pr = Pairing(raw.take(4) + "-" + raw.drop(4), addr, System.currentTimeMillis() + 10 * 60_000L)
+        pairingTries = 0
+        update { it.copy(pairing = pr) }
+        pr
     }
 
-    // ------------------------------------------------------------------ listening
+    fun cancelPairing() = update { it.copy(pairing = null) }
 
-    private fun start() {
-        stop()
-        val sp = _state.value.space ?: return
-        if (!cfg.isValid) return set { it.copy(phase = Phase.ERROR, message = "The live-sync server is not set up in this build.") }
-        set { it.copy(phase = Phase.CONNECTING, message = "") }
+    /** Pair with a device that is showing a code. */
+    suspend fun pairWith(address: String, codeText: String) = withContext(Dispatchers.IO) {
+        val code = codeText.uppercase().filter { it.isLetterOrDigit() }
+        val ip = address.trim().removePrefix("http://").substringBefore("/")
+        check(Regex("""\d{1,3}(\.\d{1,3}){3}(:\d+)?""").matches(ip)) { "Type the other device's address as numbers, like 192.168.1.5." }
+        check(code.length == 8) { "The code has 8 letters and numbers, like K7QP-X2MA." }
+        ensureServing()
+        val r = try { request(ip, "POST", "/pair", "", JSONObject().put("code", code).put("id", device).put("name", myName()).toString(), 6000) }
+        catch (e: Exception) { error("Couldn't reach that address. Both devices must be on the same Wi-Fi, with Page One open on the other one showing its code.") }
+        val o = runCatching { JSONObject(r.second) }.getOrNull()
+        check(r.first == 200 && o?.has("secret") == true) { o?.optString("error")?.takeIf { it.isNotBlank() } ?: "That code was not accepted. Check it, or make a new one on the other device." }
+        addPeer(Peer(o!!.getString("id"), o.optString("name", "Computer"), o.getString("secret"), ip.substringBefore(":"), System.currentTimeMillis()))
+        soon(500)
+    }
+
+    fun unpair(id: String) {
+        update { s -> s.copy(peers = s.peers.filter { it.id != id }, phase = if (s.peers.any { it.id != id }) Phase.WAITING else Phase.OFF, message = "") }
+        persist()
+    }
+
+    fun syncNow() = soon(0)
+
+    private fun addPeer(peer: Peer) {
+        update { s -> s.copy(peers = s.peers.filter { it.id != peer.id } + peer, phase = Phase.WAITING, message = "", pairing = null) }
+        persist()
+    }
+
+    // ------------------------------------------------------------------ network
+
+    private fun addresses(): List<String> = runCatching {
+        NetworkInterface.getNetworkInterfaces().asSequence()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { it.inetAddresses.asSequence() }
+            .filterIsInstance<Inet4Address>()
+            .filter { it.isSiteLocalAddress }
+            .map { it.hostAddress!! }.toList()
+    }.getOrDefault(emptyList())
+
+    private fun ensureServing() {
+        if (server?.isClosed == false) return
+        val ss = ServerSocket()
+        ss.reuseAddress = true
+        ss.bind(InetSocketAddress(PORT))
+        server = ss
         scope.launch {
-            runCatching { Hub.uid(context, cfg) }.onFailure { return@launch fail(it) }
-            val ref = spaceRef(sp)
-
-            regs += ref.collection("lib").addSnapshotListener { snap, err ->
-                if (err != null) return@addSnapshotListener fail(err)
-                if (snap == null) return@addSnapshotListener
-                remote = snap.documents.map { readEntry(it) }.associateBy { it.id }
-                scope.launch { reconcileSafely() }
+            while (!ss.isClosed) {
+                val s = try { ss.accept() } catch (e: Exception) { break }
+                scope.launch { runCatching { handle(s) }; runCatching { s.close() } }
             }
+        }
+    }
 
-            regs += ref.collection("days").addSnapshotListener { snap, err ->
-                if (err != null || snap == null) return@addSnapshotListener
-                val others = HashMap<String, Int>()
-                val seen = HashMap<String, Int>()
-                for (d in snap.documents) {
-                    @Suppress("UNCHECKED_CAST") val per = d.get("d") as? Map<String, Any?> ?: continue
-                    var sum = 0
-                    for ((dev, w) in per) { val n = (w as? Number)?.toInt() ?: 0; if (dev == device) seen[d.id] = n else sum += n }
-                    if (sum > 0) others[d.id] = sum
-                }
-                AppGraph.goals.setOthers(others)
-                // What this phone wrote that the server doesn't have yet (older days, or a first sync).
-                scope.launch {
-                    for ((day, w) in AppGraph.goals.ownDays()) if (w > 0 && seen[day] != w) runCatching { putDay(day, w) }
-                }
+    private class Req(val method: String, val path: String, val auth: String, val body: String, val remote: String)
+
+    private fun readReq(s: Socket): Req? {
+        s.soTimeout = 20_000
+        val inp: InputStream = s.getInputStream()
+        val buf = ByteArrayOutputStream()
+        var headEnd = -1
+        val tmp = ByteArray(8192)
+        while (headEnd < 0) {
+            val n = inp.read(tmp); if (n < 0) return null
+            buf.write(tmp, 0, n)
+            val b = buf.toByteArray()
+            headEnd = indexOf(b, "\r\n\r\n".toByteArray())
+            if (b.size > 64 * 1024 && headEnd < 0) return null
+        }
+        val all = buf.toByteArray()
+        val head = String(all, 0, headEnd)
+        val lines = head.split("\r\n")
+        val first = lines[0].split(" ")
+        val headers = lines.drop(1).mapNotNull { l -> l.indexOf(':').takeIf { it > 0 }?.let { l.substring(0, it).trim().lowercase() to l.substring(it + 1).trim() } }.toMap()
+        val len = headers["content-length"]?.toIntOrNull() ?: 0
+        if (len > 64 * 1024 * 1024) return null
+        val body = ByteArrayOutputStream()
+        body.write(all, headEnd + 4, all.size - headEnd - 4)
+        while (body.size() < len) { val n = inp.read(tmp); if (n < 0) break; body.write(tmp, 0, n) }
+        val bytes = body.toByteArray().let { if (it.size > len) it.copyOf(len) else it }
+        return Req(first.getOrElse(0) { "" }, first.getOrElse(1) { "/" }, headers["authorization"] ?: "", String(bytes, Charsets.UTF_8), s.inetAddress.hostAddress ?: "")
+    }
+
+    private fun indexOf(h: ByteArray, n: ByteArray): Int {
+        outer@ for (i in 0..h.size - n.size) { for (j in n.indices) if (h[i + j] != n[j]) continue@outer; return i }
+        return -1
+    }
+
+    private fun reply(s: Socket, status: Int, body: String) {
+        val bytes = body.toByteArray(Charsets.UTF_8)
+        val reason = when (status) { 200 -> "OK"; 400 -> "Bad Request"; 401 -> "Unauthorized"; 404 -> "Not Found"; else -> "Error" }
+        val head = "HTTP/1.1 $status $reason\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+        s.getOutputStream().apply { write(head.toByteArray()); write(bytes); flush() }
+    }
+
+    /** One request to another device: (status, body). */
+    private fun request(address: String, method: String, path: String, auth: String, body: String, timeoutMs: Int): Pair<Int, String> {
+        val host = address.substringBefore(":")
+        val port = address.substringAfter(":", PORT.toString()).toInt()
+        Socket().use { s ->
+            s.connect(InetSocketAddress(host, port), timeoutMs)
+            s.soTimeout = 60_000
+            val bytes = body.toByteArray(Charsets.UTF_8)
+            val head = StringBuilder("$method $path HTTP/1.1\r\nHost: $address\r\nConnection: close\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${bytes.size}\r\n")
+            if (auth.isNotEmpty()) head.append("Authorization: $auth\r\n")
+            head.append("\r\n")
+            s.getOutputStream().apply { write(head.toString().toByteArray()); write(bytes); flush() }
+            val raw = s.getInputStream().readBytes()
+            val end = indexOf(raw, "\r\n\r\n".toByteArray())
+            check(end >= 0) { "bad response" }
+            val status = String(raw, 0, end).split(" ").getOrNull(1)?.toIntOrNull() ?: error("bad status")
+            return status to String(raw, end + 4, raw.size - end - 4, Charsets.UTF_8)
+        }
+    }
+
+    // ------------------------------------------------------------------ serving requests
+
+    private suspend fun handle(s: Socket) {
+        val r = readReq(s) ?: return reply(s, 400, """{"error":"bad request"}""")
+        val path = r.path.substringBefore("?")
+        if (r.method == "GET" && path == "/hello") return reply(s, 200, JSONObject().put("app", "pageone").put("id", device).put("name", myName()).toString())
+
+        if (r.method == "POST" && path == "/pair") {
+            val pr = _state.value.pairing
+            val b = JSONObject(r.body.ifBlank { "{}" })
+            if (pr == null || System.currentTimeMillis() > pr.until) return reply(s, 400, """{"error":"No code is being shown on that device (or it ran out). Make a new one."}""")
+            if (++pairingTries > 5) { cancelPairing(); return reply(s, 400, """{"error":"Too many wrong tries. Make a new code."}""") }
+            val theirs = b.optString("code").uppercase().filter { it.isLetterOrDigit() }
+            if (theirs != pr.code.replace("-", "") || b.optString("id").isBlank()) return reply(s, 400, """{"error":"That code is not right."}""")
+            val secret = (1..24).map { "%02x".format(SecureRandom().nextInt(256)) }.joinToString("")
+            addPeer(Peer(b.getString("id"), b.optString("name", "Computer"), secret, r.remote, System.currentTimeMillis()))
+            soon(1500)
+            return reply(s, 200, JSONObject().put("id", device).put("name", myName()).put("secret", secret).toString())
+        }
+
+        val peer = _state.value.peers.firstOrNull { r.auth == "Bearer " + it.secret } ?: return reply(s, 401, """{"error":"not paired"}""")
+        touch(peer, r.remote)
+
+        if (r.method == "POST" && path == "/exchange") {
+            val mine = manifest()
+            applyManifest(JSONObject(r.body), peer)
+            return reply(s, 200, mine.toString())
+        }
+        val m = Regex("""^/script/([\w-]+)$""").find(path)
+        if (m != null && r.method == "GET") {
+            val sc = AppGraph.store.load(m.groupValues[1]) ?: return reply(s, 404, """{"error":"no such script"}""")
+            return reply(s, 200, ScriptStore.encode(sc).toString())
+        }
+        if (m != null && r.method == "PUT") return reply(s, 200, takeScript(m.groupValues[1], r.body).toString())
+        reply(s, 404, """{"error":"unknown"}""")
+    }
+
+    private fun touch(peer: Peer, ip: String) {
+        update { s -> s.copy(peers = s.peers.map { if (it.id == peer.id) it.copy(ip = ip, lastAt = System.currentTimeMillis()) else it }) }
+    }
+
+    // ------------------------------------------------------------------ manifests
+
+    private suspend fun manifest(): JSONObject {
+        AppGraph.store.refresh()
+        val lib = JSONArray()
+        val live = HashSet<String>()
+        for (m in AppGraph.store.library.value) {
+            live += m.id
+            lib.put(JSONObject().put("id", m.id).put("title", m.title).put("author", m.author).put("modifiedAt", m.modifiedAt).put("createdAt", m.createdAt)
+                .put("pages", m.pages).put("scenes", m.scenes).put("words", m.words).put("coverColor", m.coverColor).put("logline", m.logline).put("deleted", false))
+        }
+        for ((id, at) in tomb) if (id !in live) lib.put(JSONObject().put("id", id).put("title", "").put("author", "").put("modifiedAt", at).put("createdAt", 0)
+            .put("pages", 0).put("scenes", 0).put("words", 0).put("coverColor", 0).put("logline", "").put("deleted", true))
+        val days = JSONObject()
+        otherDays.forEach { (dev, m) -> days.put(dev, JSONObject(m as Map<*, *>)) }
+        days.put(device, JSONObject(AppGraph.goals.ownDays() as Map<*, *>))
+        val sprints = JSONArray()
+        AppGraph.sprints.history().forEach { sprints.put(JSONObject().put("at", it.at).put("minutes", it.minutes).put("words", it.words).put("goal", it.goal).put("script", "")) }
+        val s = AppGraph.settings.state.value
+        val prefs = JSONObject().put("name", AppGraph.collab.name.value).put("goal", s.dailyGoal).put("accent", s.accent.label.lowercase()).put("at", prefsAt)
+        return JSONObject().put("id", device).put("name", myName()).put("lib", lib).put("days", days).put("sprints", sprints).put("prefs", prefs)
+    }
+
+    private fun recomputeOthers() {
+        val others = HashMap<String, Int>()
+        otherDays.values.forEach { per -> per.forEach { (day, n) -> others[day] = (others[day] ?: 0) + n } }
+        AppGraph.goals.setOthers(others)
+    }
+
+    /** Take in a partner's words per day, sprints, name/goal/accent and deletions. */
+    private suspend fun applyManifest(m: JSONObject, peer: Peer) {
+        val days = m.optJSONObject("days")
+        if (days != null) {
+            for (dev in days.keys()) {
+                if (dev == device) continue
+                val per = days.getJSONObject(dev)
+                val mine = otherDays.getOrPut(dev) { ConcurrentHashMap() }
+                for (day in per.keys()) { val n = per.optInt(day); if (n > (mine[day] ?: 0)) mine[day] = n }
             }
-
-            regs += ref.collection("sprints").addSnapshotListener { snap, err ->
-                if (err != null || snap == null) return@addSnapshotListener
-                val list = snap.documents.map { d ->
-                    SprintRecord(d.getLong("at") ?: d.id.toLongOrNull() ?: 0L, (d.getLong("m") ?: 0L).toInt(), (d.getLong("g") ?: 0L).toInt(), (d.getLong("w") ?: 0L).toInt())
-                }
-                AppGraph.sprints.merge(list)
-                val have = list.map { it.at }.toSet()
-                scope.launch { for (r in AppGraph.sprints.history()) if (r.at !in have) runCatching { putSprint(r) } }
-            }
-
-            regs += ref.addSnapshotListener { snap, _ ->
-                val j = snap?.getString("pf") ?: return@addSnapshotListener
-                prefsSeen = true
-                val o = runCatching { JSONObject(j) }.getOrNull() ?: return@addSnapshotListener
-                val at = o.optLong("at")
-                if (at <= p.getLong("prefsAt", 0L)) return@addSnapshotListener
-                p.edit().putLong("prefsAt", at).apply()
+            persistDays(); recomputeOthers()
+        }
+        m.optJSONArray("sprints")?.let { a ->
+            AppGraph.sprints.merge((0 until a.length()).map { a.getJSONObject(it).let { o -> SprintRecord(o.optLong("at"), o.optInt("minutes"), o.optInt("goal"), o.optInt("words")) } })
+        }
+        m.optJSONObject("prefs")?.let { pf ->
+            val at = pf.optLong("at")
+            if (at > prefsAt) {
+                prefsAt = at
                 applyingPrefs = true
                 try {
-                    val name = o.optString("name"); val goal = o.optInt("goal"); val accent = o.optString("accent")
+                    val name = pf.optString("name"); val goal = pf.optInt("goal"); val accent = pf.optString("accent")
                     if (name.isNotBlank() && name != AppGraph.collab.name.value) AppGraph.collab.setName(name)
-                    AppGraph.settings.update { s ->
-                        var n = s
+                    AppGraph.settings.update { st ->
+                        var n = st
                         if (goal > 0) n = n.copy(dailyGoal = goal)
                         Accent.entries.firstOrNull { it.label.equals(accent, true) }?.let { n = n.copy(accent = it) }
                         n
                     }
                 } finally { applyingPrefs = false }
             }
-            // Nothing on the server yet (the first device to sync): it gets this phone's name, goal and accent.
-            prefsJob = scope.launch { delay(4000); if (!prefsSeen) pushPrefs() }
         }
+        val openId = AppGraph.openScriptId
+        val lib = m.optJSONArray("lib") ?: JSONArray()
+        for (i in 0 until lib.length()) {
+            val e = lib.getJSONObject(i)
+            val id = e.getString("id"); val at = e.optLong("modifiedAt")
+            if (!e.optBoolean("deleted")) { if ((tomb[id] ?: Long.MIN_VALUE) != Long.MIN_VALUE && at > tomb[id]!!) tomb.remove(id); continue }
+            if ((tomb[id] ?: 0L) < at) tomb[id] = at
+            val local = AppGraph.store.library.value.firstOrNull { it.id == id }
+            if (local != null && id != openId && at >= local.modifiedAt) {
+                applying += id
+                try { AppGraph.store.delete(id) } finally { applying -= id }
+            }
+        }
+        persist()
     }
 
-    private fun readEntry(d: DocumentSnapshot) = Entry(
-        d.id, d.getString("t") ?: "", d.getString("a") ?: "", d.getLong("m") ?: 0L, d.getLong("cr") ?: 0L,
-        (d.getLong("p") ?: 0L).toInt(), (d.getLong("sc") ?: 0L).toInt(), (d.getLong("w") ?: 0L).toInt(), (d.getLong("c") ?: 0L).toInt(),
-        d.getString("l") ?: "", d.getBoolean("d") ?: false,
-    )
+    // ------------------------------------------------------------------ moving projects
 
-    // ------------------------------------------------------------------ writing the small things
+    /** Receive a project from a partner. Answers whether it was taken. */
+    private suspend fun takeScript(id: String, body: String): JSONObject {
+        val incoming = ScriptStore.decode(JSONObject(body))
+        if (incoming.id != id) return JSONObject().put("taken", false).put("why", "mismatch")
+        if (AppGraph.openScriptId == id) return JSONObject().put("taken", false).put("why", "open here")
+        if ((tomb[id] ?: 0L) >= incoming.modifiedAt) return JSONObject().put("taken", false).put("why", "deleted here")
+        val local = AppGraph.store.load(id)
+        if (local != null && local.modifiedAt > incoming.modifiedAt + 1500) return JSONObject().put("taken", false).put("why", "newer here")
+        applying += id
+        try {
+            val layout = AppGraph.settings.state.value.layout
+            fun pagesOf(sc: com.amit.pageone.core.Script) = runCatching { Paginator(layout).paginate(sc.elements, Locking.forcedBreaks(sc.elements, sc.extras.lock)).pageCount }.getOrDefault(1)
+            if (local != null && local.modifiedAt > (syncedAt[id] ?: 0L) + 1500) {
+                runCatching { AppGraph.store.saveVersion(local, "Before Wi-Fi sync", pagesOf(local), AppGraph.settings.state.value.versionsToKeep) }
+            }
+            AppGraph.store.save(incoming, pagesOf(incoming))
+            syncedAt[id] = incoming.modifiedAt; persist()
+        } finally { applying -= id }
+        return JSONObject().put("taken", true)
+    }
 
-    @Volatile private var applyingPrefs = false
+    // ------------------------------------------------------------------ the sync loop
+
+    private fun soon(ms: Long) {
+        if (!active) return
+        soonJob?.cancel()
+        soonJob = scope.launch { delay(ms); runAll() }
+    }
+
+    private suspend fun runAll() {
+        if (!lock.tryLock()) return
+        try {
+            withContext(Dispatchers.IO) {
+                runCatching { ensureServing() }
+                update { it.copy(phase = Phase.WORKING, message = "") }
+                var reached = 0
+                for (peer in _state.value.peers) if (runCatching { syncWith(peer) }.getOrDefault(false)) reached++
+                persist()
+                if (reached > 0) update { it.copy(phase = Phase.SYNCED, message = "", lastAt = System.currentTimeMillis()) }
+                else update { it.copy(phase = Phase.WAITING, message = "Looking for your other device. Open Page One on it, on the same Wi-Fi.") }
+            }
+        } catch (e: Exception) {
+            update { it.copy(phase = Phase.ERROR, message = e.message ?: "Something went wrong") }
+        } finally { lock.unlock() }
+    }
+
+    private suspend fun syncWith(peer: Peer): Boolean {
+        val auth = "Bearer " + peer.secret
+        var ip = peer.ip
+        suspend fun reach(): Pair<Int, String>? = runCatching { request(ip, "POST", "/exchange", auth, manifest().toString(), 8000) }.getOrNull()
+        var r = if (ip.isNotBlank()) reach() else null
+        if (r == null && System.currentTimeMillis() > nextScan) {
+            nextScan = System.currentTimeMillis() + 60_000
+            val mine = addresses().firstOrNull()
+            val found = mine?.let { findDevice(it, peer.id) }
+            if (found != null) { ip = found; update { s -> s.copy(peers = s.peers.map { if (it.id == peer.id) it.copy(ip = found) else it }) }; r = reach() }
+        }
+        if (r == null || r.first != 200) return false
+        touch(peer, ip)
+        val theirs = JSONObject(r.second)
+        applyManifest(theirs, peer)
+
+        val openId = AppGraph.openScriptId
+        AppGraph.store.refresh()
+        val local = AppGraph.store.library.value.associateBy { it.id }
+        val remote = HashMap<String, Entry>()
+        val lib = theirs.optJSONArray("lib") ?: JSONArray()
+        for (i in 0 until lib.length()) {
+            val e = lib.getJSONObject(i)
+            remote[e.getString("id")] = Entry(e.getString("id"), e.optString("title"), e.optString("author"), e.optLong("modifiedAt"), e.optLong("createdAt"), e.optInt("pages"), e.optInt("scenes"), e.optInt("words"), e.optInt("coverColor"), e.optString("logline"), e.optBoolean("deleted"))
+        }
+        for (e in remote.values) {
+            if (e.deleted) continue
+            val l = local[e.id]
+            runCatching {
+                if (l == null) { if ((tomb[e.id] ?: 0L) < e.modifiedAt) pull(ip, auth, e.id) }
+                else if (e.modifiedAt > l.modifiedAt + 1500) { if (e.id != openId) pull(ip, auth, e.id) }
+                else if (l.modifiedAt > e.modifiedAt + 1500) push(ip, auth, e.id)
+            }
+        }
+        for (l in local.values) if (!remote.containsKey(l.id)) runCatching { push(ip, auth, l.id) }
+        return true
+    }
+
+    private suspend fun pull(ip: String, auth: String, id: String) {
+        val r = request(ip, "GET", "/script/$id", auth, "", 8000)
+        if (r.first == 200) takeScript(id, r.second)
+    }
+
+    private suspend fun push(ip: String, auth: String, id: String) {
+        val s = AppGraph.store.load(id) ?: return
+        val r = request(ip, "PUT", "/script/$id", auth, ScriptStore.encode(s).toString(), 8000)
+        if (r.first == 200) { syncedAt[id] = s.modifiedAt; persist() }
+    }
+
+    private suspend fun findDevice(own: String, id: String): String? {
+        val parts = own.split(".")
+        if (parts.size != 4) return null
+        val prefix = parts.take(3).joinToString(".")
+        val hosts = (1..254).map { "$prefix.$it" }.filter { it != own }
+        for (chunk in hosts.chunked(64)) {
+            val hits = coroutineScope {
+                chunk.map { h -> async(Dispatchers.IO) {
+                    runCatching { val r = request(h, "GET", "/hello", "", "", 500); if (r.first == 200 && JSONObject(r.second).optString("id") == id) h else null }.getOrNull()
+                } }.map { it.await() }
+            }
+            hits.firstOrNull { it != null }?.let { return it }
+        }
+        return null
+    }
+
+    // ------------------------------------------------------------------ hooks
 
     private fun prefsChanged() {
         if (!active || applyingPrefs) return
-        prefsJob?.cancel()
-        prefsJob = scope.launch { delay(1200); pushPrefs() }
+        prefsAt = System.currentTimeMillis(); persist()
+        soon(2000)
     }
 
-    private fun pushPrefs() {
-        val sp = _state.value.space ?: return
-        val s = AppGraph.settings.state.value
-        val at = System.currentTimeMillis()
-        p.edit().putLong("prefsAt", at).apply()
-        val o = JSONObject().put("name", AppGraph.collab.displayName().takeIf { AppGraph.collab.name.value.isNotBlank() || it != "Writer" } ?: "")
-            .put("goal", s.dailyGoal).put("accent", s.accent.label.lowercase()).put("at", at)
-        spaceRef(sp).set(mapOf("pf" to o.toString()), SetOptions.merge())
-    }
-
-    private val dayJobs = HashMap<String, Job>()
-    private fun dayChanged(day: String, words: Int) {
-        if (!active) return
-        dayJobs.remove(day)?.cancel()
-        dayJobs[day] = scope.launch { delay(2500); runCatching { putDay(day, words) } }
-    }
-
-    private suspend fun putDay(day: String, words: Int) {
-        val sp = _state.value.space ?: return
-        spaceRef(sp).collection("days").document(day).set(mapOf("d" to mapOf(device to words)), SetOptions.merge()).await()
-    }
-
-    private suspend fun putSprint(r: SprintRecord) {
-        val sp = _state.value.space ?: return
-        spaceRef(sp).collection("sprints").document(r.at.toString()).set(mapOf("at" to r.at, "m" to r.minutes, "w" to r.words, "g" to r.goal, "s" to "")).await()
-    }
-
-    private suspend fun putEntry(m: ScriptMeta) {
-        val sp = _state.value.space ?: return
-        spaceRef(sp).collection("lib").document(m.id).set(mapOf(
-            "t" to m.title, "a" to m.author, "m" to m.modifiedAt, "cr" to m.createdAt, "p" to m.pages, "sc" to m.scenes,
-            "w" to m.words, "c" to m.coverColor, "l" to m.logline, "d" to false,
-        )).await()
-    }
-
-    // ------------------------------------------------------------------ hooks from the library
-
-    private fun saved(m: ScriptMeta) {
-        if (!active || m.id in applying) return
-        val r = remote[m.id]
-        if (r != null && !r.deleted && r.modifiedAt == m.modifiedAt) return
-        timers.remove(m.id)?.cancel()
-        timers[m.id] = scope.launch { delay(1500); timers.remove(m.id); runCatching { putEntry(m) } }
-    }
-
-    /** The writer deleted a project from the library: tell the other device. (Nothing else ever does.) */
+    /** The writer deleted a project from the library: tell the other devices. (Nothing else ever does.) */
     fun userDeleted(id: String) {
-        val sp = _state.value.space ?: return
-        if (id in applying) return
-        timers.remove(id)?.cancel()
-        if (remote.containsKey(id)) scope.launch {
-            runCatching {
-                spaceRef(sp).collection("lib").document(id).set(mapOf(
-                    "t" to "", "a" to "", "m" to System.currentTimeMillis(), "cr" to 0L, "p" to 0, "sc" to 0, "w" to 0, "c" to 0, "l" to "", "d" to true,
-                )).await()
-            }
-        }
+        if (!active) return
+        tomb[id] = System.currentTimeMillis(); persist()
+        soon(1000)
     }
 
-    // ------------------------------------------------------------------ projects
+    /** Run a pass now (the editor closed, the app came back): catches up on what was skipped while a script was open. */
+    fun kick() { if (active) soon(500) }
 
-    private suspend fun reconcileSafely() {
-        lock.withLock {
-            runCatching { reconcile() }.onFailure { fail(it) }
-        }
-    }
-
-    /** Bring this phone and the shared library level, newest copy winning. */
-    private suspend fun reconcile() {
-        if (!active || !cfg.isValid) return
-        val store = AppGraph.store
-        store.refresh()
-        val openId = AppGraph.openScriptId
-        val local = store.library.value.associateBy { it.id }
-        val todo = ArrayList<Triple<String, Entry?, ScriptMeta?>>() // kind, remote, local
-        for (r in remote.values) {
-            val l = local[r.id]
-            if (r.deleted) {
-                if (l != null && r.id != openId && r.modifiedAt >= l.modifiedAt) todo += Triple("gone", r, l)
-                else if (l != null && l.modifiedAt > r.modifiedAt) todo += Triple("push", null, l)
-                continue
-            }
-            if (l == null) todo += Triple("pull", r, null)
-            else if (r.id == openId) { if (l.modifiedAt > r.modifiedAt + 1500) todo += Triple("entry", null, l) }
-            else if (r.modifiedAt > l.modifiedAt + 1500) todo += Triple("pull", r, l)
-            else if (l.modifiedAt > r.modifiedAt + 1500) todo += Triple("push", null, l)
-        }
-        for (l in local.values) if (!remote.containsKey(l.id)) todo += Triple("push", null, l)
-        // Copies brought in by an earlier build were counted as one page; count them properly.
-        for (l in local.values) if (l.pages <= 1 && l.scenes > 2 && l.id != openId && todo.none { it.third?.id == l.id || it.second?.id == l.id }) todo += Triple("pages", null, l)
-
-        if (todo.isNotEmpty()) set { it.copy(phase = Phase.WORKING, message = "Syncing ${todo.size} project${if (todo.size == 1) "" else "s"}…") }
-        for ((i, t) in todo.withIndex()) {
-            if (todo.size > 1) set { it.copy(message = "Syncing project ${i + 1} of ${todo.size}…") }
-            runCatching {
-                when (t.first) {
-                    "pull" -> pull(t.second!!)
-                    "gone" -> { applying += t.third!!.id; try { store.delete(t.third!!.id) } finally { applying -= t.third!!.id } }
-                    "push" -> pushWhole(t.third!!)
-                    "pages" -> recount(t.third!!)
-                    else -> putEntry(t.third!!)
-                }
-            }
-        }
-        set { it.copy(phase = Phase.SYNCED, message = "", lastAt = System.currentTimeMillis()) }
-    }
-
-    private suspend fun fetchScript(id: String): Remote? {
-        Hub.uid(context, cfg)
-        val ref = db.collection("scripts").document(id)
-        val els = ref.collection("elements").get().await()
-        val head = ref.get().await()
-        val notes = ref.collection("comments").get().await()
-        val elements = ArrayList<Element>(); val order = HashMap<Long, Double>()
-        for (d in els.documents) {
-            val eid = d.id.toLongOrNull() ?: continue
-            elements += Element(
-                eid, ElementType.fromName(d.getString("t")), d.getString("x") ?: "", d.getBoolean("d") ?: false,
-                (d.getLong("r") ?: 0L).toInt(), (d.getLong("c") ?: 0L).toInt(), d.getString("s") ?: "",
-            )
-            order[eid] = d.getDouble("o") ?: 0.0
-        }
-        if (elements.isEmpty()) return null
-        elements.sortWith(compareBy<Element> { order[it.id] ?: 0.0 }.thenBy { it.id })
-        val title = head.getString("title") ?: ""
-        val tp = head.getString("tp")?.let { j -> runCatching { ScriptStore.decodeTitlePage(JSONObject(j), title) }.getOrNull() }
-        val extras = head.getString("ex")?.let { j -> runCatching { ExtrasCodec.decode(JSONObject(j)) }.getOrNull() }
-        val comments = notes.documents.mapNotNull { d -> d.getString("j")?.let { j -> runCatching { ExtrasCodec.decodeComment(JSONObject(j)) }.getOrNull() } }.sortedBy { it.at }
-        return Remote(elements, title, tp, extras, comments)
-    }
-
-    /** Take the shared copy of a project this phone doesn't have, or has an older copy of. */
-    private suspend fun pull(r: Entry) {
-        val data = fetchScript(r.id) ?: return // the other device is still uploading it; the next change brings it
-        applying += r.id
-        try {
-            val store = AppGraph.store
-            val local = store.load(r.id)
-            val title = data.title.ifBlank { r.title }
-            val tp = data.tp ?: local?.titlePage ?: TitlePage(title = title)
-            val s = if (local != null) {
-                val ex = data.extras?.let { ExtrasCodec.mergeRemote(local.extras, it) } ?: local.extras
-                local.copy(title = title, titlePage = tp, elements = data.elements, extras = ex.copy(comments = data.comments), coverColor = if (r.coverColor != 0) r.coverColor else local.coverColor, modifiedAt = r.modifiedAt)
-            } else {
-                Script(
-                    id = r.id, title = title, elements = data.elements, titlePage = tp, createdAt = if (r.createdAt > 0) r.createdAt else System.currentTimeMillis(),
-                    modifiedAt = r.modifiedAt, coverColor = r.coverColor, extras = (data.extras ?: ScriptExtras()).copy(comments = data.comments),
-                )
-            }
-            val pages = runCatching {
-                com.amit.pageone.core.Paginator(AppGraph.settings.state.value.layout).paginate(s.elements, com.amit.pageone.core.Locking.forcedBreaks(s.elements, s.extras.lock)).pageCount
-            }.getOrDefault(r.pages)
-            store.save(s, pages)
-        } finally { applying -= r.id }
-    }
-
-    private suspend fun recount(m: ScriptMeta) {
-        val s = AppGraph.store.load(m.id) ?: return
-        val pages = com.amit.pageone.core.Paginator(AppGraph.settings.state.value.layout).paginate(s.elements, com.amit.pageone.core.Locking.forcedBreaks(s.elements, s.extras.lock)).pageCount
-        if (pages == m.pages) return
-        applying += m.id
-        try { AppGraph.store.save(s, pages) } finally { applying -= m.id }
-    }
-
-    private suspend fun pushWhole(m: ScriptMeta) {
-        val s = AppGraph.store.load(m.id) ?: return
-        uploadScript(s)
-        putEntry(m)
-    }
-
-    /** Write a whole script as the shared copy: its lines, title page, story data and notes. */
-    private suspend fun uploadScript(s: Script) {
-        val me = Hub.uid(context, cfg)
-        val ref = db.collection("scripts").document(s.id)
-        val els = ref.collection("elements").get().await()
-        val notes = ref.collection("comments").get().await()
-        val known = HashMap<Long, Double>()
-        for (d in els.documents) d.id.toLongOrNull()?.let { known[it] = d.getDouble("o") ?: 0.0 }
-        val orders = Ordering.assign(s.elements.map { it.id }, known)
-        val ops = ArrayList<(com.google.firebase.firestore.WriteBatch) -> Unit>()
-        for (e in s.elements) {
-            val data = hashMapOf<String, Any>(
-                "t" to e.type.name, "x" to e.text, "d" to e.dual, "r" to e.revision.toLong(), "c" to e.color.toLong(), "s" to e.synopsis,
-                "o" to orders.getValue(e.id), "by" to me, "at" to FieldValue.serverTimestamp(),
-            )
-            val doc = ref.collection("elements").document(e.id.toString())
-            ops += { b -> b.set(doc, data) }
-        }
-        val ids = s.elements.map { it.id.toString() }.toSet()
-        for (d in els.documents) if (d.id !in ids) ops += { b -> b.delete(d.reference) }
-        val meta = mapOf(
-            "members" to mapOf(me to AppGraph.collab.displayName()), "title" to s.title,
-            "tp" to ScriptStore.encodeTitlePage(s.titlePage).toString(),
-            "ex" to ExtrasCodec.encode(s.extras, includeComments = false, includeLocalMedia = false).toString(),
-            "updatedAt" to FieldValue.serverTimestamp(),
-        )
-        ops += { b -> b.set(ref, meta, SetOptions.merge()) }
-        val have = s.extras.comments.map { it.id }.toSet()
-        for (c in s.extras.comments) {
-            val doc = ref.collection("comments").document(c.id)
-            val data = mapOf("j" to ExtrasCodec.encodeComment(c).toString(), "at" to c.at)
-            ops += { b -> b.set(doc, data) }
-        }
-        for (d in notes.documents) if (d.id !in have) ops += { b -> b.delete(d.reference) }
-        ops.chunked(450).forEach { chunk ->
-            val batch = db.batch()
-            chunk.forEach { it(batch) }
-            batch.commit().await()
-        }
-    }
+    companion object { const val PORT = 47831 }
 }

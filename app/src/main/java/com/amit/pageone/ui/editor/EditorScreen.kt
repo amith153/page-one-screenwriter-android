@@ -151,6 +151,11 @@ private enum class SidePane { NONE, NAVIGATOR, CARDS }
 @Composable
 fun EditorScreen(scriptId: String, settings: AppSettings, onBack: () -> Unit, onSettings: () -> Unit) {
     val vm: EditorViewModel = viewModel(key = "editor-$scriptId") { EditorViewModel(scriptId) }
+    // While this screen is up the script is open: Wi-Fi sync leaves it alone, and catches up when it closes.
+    androidx.compose.runtime.DisposableEffect(scriptId) {
+        AppGraph.openScriptId = scriptId
+        onDispose { if (AppGraph.openScriptId == scriptId) { AppGraph.openScriptId = null; AppGraph.sync.kick() } }
+    }
     val scriptState by vm.script.collectAsStateWithLifecycle()
     val derived by vm.derived.collectAsStateWithLifecycle()
     val focusReq by vm.focusReq.collectAsStateWithLifecycle()

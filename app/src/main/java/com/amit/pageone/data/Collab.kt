@@ -82,8 +82,7 @@ class CollabStore(private val context: Context) {
         _live.value = s
     }
 
-    // With sync on, every project is live between your own devices.
-    fun isLive(scriptId: String) = scriptId in _live.value || AppGraph.sync.active
+    fun isLive(scriptId: String) = scriptId in _live.value
 
     // ---- what you've already looked at in a shared script's change history
     fun seenAt(scriptId: String): Long = p.getLong("seen_$scriptId", 0L)

@@ -93,7 +93,6 @@ fun AppRoot(
             android.widget.Toast.makeText(ctx, "That join code wasn't found — check it and try again", android.widget.Toast.LENGTH_LONG).show()
             return@LaunchedEffect
         }
-        if (inv.scriptId.startsWith("sync-")) { linkDevice(ctx, inv.scriptId); return@LaunchedEffect }
         stores.values.forEach { it.clear() }; stores.clear()
         val id = AppGraph.collab.join(inv)
         android.widget.Toast.makeText(ctx, "Joining “${inv.title}” with ${inv.from}…", android.widget.Toast.LENGTH_SHORT).show()
@@ -131,7 +130,6 @@ fun AppRoot(
                         android.widget.Toast.makeText(ctx, "Joining…", android.widget.Toast.LENGTH_SHORT).show()
                         val inv = resolveInvite(ctx, code)
                         if (inv == null) android.widget.Toast.makeText(ctx, "That join code wasn't found — check it and try again", android.widget.Toast.LENGTH_LONG).show()
-                        else if (inv.scriptId.startsWith("sync-")) linkDevice(ctx, inv.scriptId)
                         else push("editor/" + AppGraph.collab.join(inv))
                     }
                 },
@@ -152,13 +150,6 @@ fun AppRoot(
             r == "inbox" -> com.amit.pageone.ui.library.InboxScreen(onBack = { pop() }, onOpenScript = { id -> stack = listOf("library", "editor/$id") })
         }
     }
-}
-
-/** A code made under Settings › Sync pairs this phone with the computer instead of opening one script. */
-private suspend fun linkDevice(ctx: android.content.Context, space: String) {
-    runCatching { AppGraph.sync.adopt(space) }
-        .onSuccess { android.widget.Toast.makeText(ctx, "Linked — your projects and writing stats now follow you between devices", android.widget.Toast.LENGTH_LONG).show() }
-        .onFailure { android.widget.Toast.makeText(ctx, it.message ?: "Couldn't link", android.widget.Toast.LENGTH_LONG).show() }
 }
 
 /** Accepts a short join code (K7QP-X2MA), a pageone://join/ link, or a whole message containing one. */

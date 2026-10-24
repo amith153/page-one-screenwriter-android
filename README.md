@@ -12,7 +12,7 @@ Get the latest APK from the [Releases page](https://github.com/amith153/page-one
 2. When asked, allow "install unknown apps" for your browser or file manager.
 3. If Play Protect warns you, choose **More details, then Install anyway**. The app is not on the Play Store.
 
-The downloadable APK contains **no server keys**. Writing, planning, exporting to PDF, Final Draft and Fountain, goals and sprints all work. Live co-writing, desktop sync, Google Drive backup and daily film frames are off, because they need a server and keys that you set up yourself (below). Your scripts stay on your phone unless you switch those on.
+The downloadable APK contains **no server keys**. Writing, planning, exporting to PDF, Final Draft and Fountain, goals and sprints, and **Wi-Fi sync with the desktop app and other phones** all work. Live co-writing with other people, Google Drive backup and daily film frames need a server and keys that you set up yourself (below). Your scripts stay on your devices.
 
 ## What it does
 
@@ -21,7 +21,8 @@ The downloadable APK contains **no server keys**. Writing, planning, exporting t
 - **Check**: Script Doctor (format and consistency checks), X-ray reports, revision sets with colours, locked pages, versions you can restore.
 - **Export**: PDF (Courier Prime, title page, watermark, revision marks), Final Draft `.fdx`, Fountain, plus Dropbox/OneDrive style linked copies.
 - **Keep going**: daily word goal, streak, writing year, sprints, deadlines, reminders, and a daily film frame and line.
-- **Together** (needs your own server): live co-writing with join codes, and one-writer sync with the desktop app.
+- **Sync** (built in, over Wi-Fi): Settings › Sync pairs this phone with the desktop app or another phone with a short code. Projects, daily words, streak, sprints and goal follow you. No account, no server, no keys.
+- **Co-writing** (needs your own server): live writing with other people using join codes.
 
 ## Build it yourself
 
@@ -35,7 +36,7 @@ cd page-one-screenwriter-android
 
 Optional features:
 
-1. **Live co-writing and desktop sync**: create a free Firebase project (Firestore plus anonymous sign-in), copy `collab.properties.example` to `collab.properties` and fill in your project id, API key and app id. The Firestore rules and the full setup are in [docs/HISTORY.md](docs/HISTORY.md). Use the same project in the desktop app's `.env.local` to link the two.
+1. **Live co-writing with other people**: create a free Firebase project (Firestore plus anonymous sign-in), copy `collab.properties.example` to `collab.properties` and fill in your project id, API key and app id. The Firestore rules and the full setup are in [docs/HISTORY.md](docs/HISTORY.md).
 2. **Film frames**: add free `tmdbKey` / `omdbKey` values to the same file.
 3. **Release signing**: copy `keystore.properties.example` to `keystore.properties` and point it at your own keystore, then `./gradlew assembleRelease`.
 

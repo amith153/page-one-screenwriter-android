@@ -30,8 +30,8 @@ android {
         applicationId = "com.amit.pageone"
         minSdk = 26          // Android 8.0+ — installs on almost every phone in use
         targetSdk = 36
-        versionCode = 10
-        versionName = "3.2"
+        versionCode = 11
+        versionName = "3.3"
 
         resValue("string", "collab_project_id", collabProps.getProperty("projectId", ""))
         resValue("string", "collab_api_key", collabProps.getProperty("apiKey", ""))
