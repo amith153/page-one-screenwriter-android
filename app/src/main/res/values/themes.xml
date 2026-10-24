@@ -1,0 +1,22 @@
+<resources>
+    <style name="Theme.PageOne" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/app_bg</item>
+    </style>
+
+    <!-- Quick capture (share sheet / widget): a floating card over whatever app you were in. -->
+    <style name="Theme.PageOne.Capture" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!-- Launch theme. Android 8–11: classic splash from the window background. -->
+    <style name="Theme.PageOne.Splash" parent="Theme.PageOne">
+        <item name="android:windowBackground">@drawable/splash_legacy</item>
+    </style>
+</resources>

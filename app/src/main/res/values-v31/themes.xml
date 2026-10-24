@@ -1,0 +1,8 @@
+<resources>
+    <!-- Android 12+: system splash with the brand mark on coral. -->
+    <style name="Theme.PageOne.Splash" parent="Theme.PageOne">
+        <item name="android:windowSplashScreenBackground">@color/brand</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash</item>
+        <item name="android:windowSplashScreenAnimationDuration">600</item>
+    </style>
+</resources>

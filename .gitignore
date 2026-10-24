@@ -1,0 +1,43 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx
+.kotlin
+
+# signing secrets
+keystore.properties
+collab.properties
+*.jks
+
+# JVM crash logs
+hs_err_pid*.log
+replay_pid*.log
+
+# personal data and builds (never commit)
+_backup*
+_phone_data_backup*
+_tmp_*
+*.tar
+*.zip
+*.apk
+/share
+
+
+# misc
+app/*.jks
+*.log
+
+# the desktop app lives in its own repository
+/desktop/
+/DESKTOP_SUMMARY.md
+*.tar.gz
+*.p12
+*.pfx
+*.pem
+google-services.json
+.claude/

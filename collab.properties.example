@@ -1,0 +1,12 @@
+# Copy to collab.properties (git-ignored) and fill in. All optional.
+# Without them the app still writes, exports and prints; live co-writing, desktop sync and film stills switch off.
+
+# Your own Firebase project (console.firebase.google.com): Project settings, Your apps.
+projectId=
+apiKey=
+appId=
+
+# Optional: free key from themoviedb.org (Settings, API) for real film frames on the daily card
+tmdbKey=
+# Optional: key from omdbapi.com for film details and posters
+omdbKey=

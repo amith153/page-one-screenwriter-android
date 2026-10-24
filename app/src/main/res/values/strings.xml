@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Page One</string>
+    <string name="capture_label">Save idea</string>
+    <string name="widget_inbox_label">Idea inbox</string>
+    <string name="widget_inbox_desc">Capture a line or a scene in one tap — type or speak it.</string>
+    <string name="widget_goal_label">Writing goal</string>
+    <string name="widget_goal_desc">Today\'s words, your streak and a line to inspire you.</string>
+    <string name="table_read_channel">Table read</string>
+</resources>

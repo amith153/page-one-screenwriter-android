@@ -1,0 +1,11 @@
+<resources>
+    <color name="brand">#12141B</color>
+    <color name="brand_dark">#E7B35A</color>
+    <color name="brand_page">#F4EBDD</color>
+    <color name="app_bg">#0A0B0F</color>
+    <color name="widget_bg">#F2101218</color>
+    <color name="widget_card">#FF1B1F29</color>
+    <color name="widget_gold">#FFE7B35A</color>
+    <color name="widget_text">#FFEDEBF2</color>
+    <color name="widget_muted">#FFA3A7B5</color>
+</resources>

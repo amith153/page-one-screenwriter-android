@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The built-in live-sync server is no longer stored in source code.
+     Its values live in collab.properties (project root, git-ignored) and are
+     injected at build time — see app/build.gradle.kts. -->
+<resources />
