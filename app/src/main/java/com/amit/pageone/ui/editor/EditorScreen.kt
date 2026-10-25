@@ -143,7 +143,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private enum class EditorMode { WRITE, CARDS, PAGES }
-private enum class SheetKind { EXPORT, REVISIONS, VERSIONS, TITLE, STATS, COLLAB, CHANGES, DOCTOR, BIBLE, STRUCTURE, XRAY, MOOD, NOTES, PRODUCTION, SPRINT, INBOX, SHORTCUTS }
+private enum class SheetKind { EXPORT, REVISIONS, VERSIONS, TITLE, STATS, COLLAB, DOCTOR, BIBLE, STRUCTURE, XRAY, MOOD, NOTES, PRODUCTION, SPRINT, INBOX, SHORTCUTS }
 /** Tablets / unfolded foldables: what sits beside the script. */
 private enum class SidePane { NONE, NAVIGATOR, CARDS }
 
@@ -166,11 +166,7 @@ fun EditorScreen(scriptId: String, settings: AppSettings, onBack: () -> Unit, on
     val sessionWords by vm.sessionWords.collectAsStateWithLifecycle()
     val find by vm.find.collectAsStateWithLifecycle()
     val versions by vm.versions.collectAsStateWithLifecycle()
-    val liveStatus by vm.liveStatus.collectAsStateWithLifecycle()
-    val peers by vm.peers.collectAsStateWithLifecycle()
     val vmMessage by vm.message.collectAsStateWithLifecycle()
-    val changes by vm.changes.collectAsStateWithLifecycle()
-    val seen by vm.seen.collectAsStateWithLifecycle()
     val selection by vm.selection.collectAsStateWithLifecycle()
     val today by AppGraph.goals.todayWords.collectAsState()
 
@@ -256,15 +252,9 @@ fun EditorScreen(scriptId: String, settings: AppSettings, onBack: () -> Unit, on
         Notifier.scheduleAll(ctx)
     }
 
-    val peerColors = remember(peers) { peers.filter { it.elementId != null }.associate { it.elementId!! to Color(it.color) } }
-    val unseenByElement = remember(changes, seen, liveStatus) {
-        val m = LinkedHashMap<Long, com.amit.pageone.collab.Change>()
-        for (c in changes) if (vm.isUnseen(c, seen) && c.kind != "delete" && c.elementId !in m) m[c.elementId] = c
-        m
+    val authorColors = remember(script.elements, settings.showAuthors) {
+        if (!settings.showAuthors) emptyMap() else script.elements.filter { it.by != null }.associate { it.id to Color(AppGraph.collab.colorFor(it.by!!)) }
     }
-    val unseenCount = remember(changes, seen, liveStatus) { changes.count { vm.isUnseen(it, seen) } }
-    var openChange by remember { mutableStateOf<com.amit.pageone.collab.Change?>(null) }
-    var following by remember { mutableStateOf<String?>(null) }
 
     fun startNote() {
         val fid = vm.focused.value ?: return message("Tap into a line first, then select the words to pin a note to")
@@ -329,14 +319,6 @@ fun EditorScreen(scriptId: String, settings: AppSettings, onBack: () -> Unit, on
             val h = listState.layoutInfo.viewportSize.height
             listState.animateScrollToItem(itemOf(idx), -(h / 3))
         }
-    }
-
-    LaunchedEffect(peers, following) {
-        val f = following ?: return@LaunchedEffect
-        val p = peers.firstOrNull { it.uid == f } ?: run { following = null; return@LaunchedEffect }
-        val idx = p.elementId?.let { indexById[it] } ?: return@LaunchedEffect
-        val visible = listState.layoutInfo.visibleItemsInfo.map { it.index }
-        if (visible.isEmpty() || itemOf(idx) !in visible.drop(1).dropLast(1)) listState.animateScrollToItem((itemOf(idx) - 2).coerceAtLeast(0))
     }
 
     val rowActions = remember(vm) {
@@ -439,20 +421,6 @@ fun EditorScreen(scriptId: String, settings: AppSettings, onBack: () -> Unit, on
                                 }
                             },
                             actions = {
-                                if (liveStatus != null) {
-                                    Row(
-                                        Modifier.clip(RoundedCornerShape(50)).clickable { hideKeyboard(); sheet = SheetKind.COLLAB }.padding(horizontal = 6.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        val dot = when (liveStatus) {
-                                            is com.amit.pageone.collab.LiveStatus.Live -> Color(0xFF3FBF7F)
-                                            is com.amit.pageone.collab.LiveStatus.Error -> cs.error
-                                            else -> cs.onSurfaceVariant
-                                        }
-                                        Box(Modifier.size(8.dp).clip(RoundedCornerShape(4.dp)).background(dot))
-                                        if (peers.isNotEmpty()) { Spacer(Modifier.width(6.dp)); AvatarStack(peers, cs.surface) }
-                                    }
-                                }
                                 IconButton(onClick = ::openNavigator) { Icon(Icons.AutoMirrored.Outlined.FormatListBulleted, "Navigator") }
                                 val cardsOn = mode == EditorMode.CARDS || (wide && sidePane == SidePane.CARDS)
                                 IconToggleButton(checked = cardsOn, onCheckedChange = { toggleCards() }) {
@@ -501,13 +469,6 @@ fun EditorScreen(scriptId: String, settings: AppSettings, onBack: () -> Unit, on
             ) { pad ->
                 Column(Modifier.padding(pad).fillMaxSize()) {
                     SprintBanner()
-                    if (liveStatus != null && !focusMode && mode == EditorMode.WRITE) {
-                        LiveBanner(
-                            peers = peers, unseen = unseenCount, following = following,
-                            onFollow = { following = it },
-                            onReview = { hideKeyboard(); sheet = SheetKind.CHANGES },
-                        )
-                    }
                     Row(Modifier.weight(1f)) {
                         // ---- tablet side pane
                         if (wide && !focusMode && mode == EditorMode.WRITE && sidePane != SidePane.NONE) {
@@ -537,9 +498,7 @@ fun EditorScreen(scriptId: String, settings: AppSettings, onBack: () -> Unit, on
                                     focusedId = focusedId, focusReq = focusReq,
                                     dimOthers = focusMode && settings.focusDim,
                                     actions = rowActions,
-                                    peerColors = peerColors,
-                                    changeMarks = unseenByElement.mapValues { Color(it.value.color) },
-                                    onChangeTap = { id -> openChange = unseenByElement[id] },
+                                    authorColors = authorColors,
                                     onTitleClick = { sheet = SheetKind.TITLE },
                                     onAppend = { vm.appendNewElement() },
                                     noteRanges = noteRanges,
@@ -627,14 +586,6 @@ fun EditorScreen(scriptId: String, settings: AppSettings, onBack: () -> Unit, on
         val quote = e?.text?.let { t -> t.substring(sel.start.coerceIn(0, t.length), sel.end.coerceIn(sel.start.coerceIn(0, t.length), t.length)).ifEmpty { t } }.orEmpty()
         AddNoteDialog(quote, onDismiss = { noteDraft = null }, onAdd = { text, atts -> vm.addComment(sel, text, atts); noteDraft = null; message("Note pinned") })
     }
-    openChange?.let { c ->
-        ChangeDialog(
-            change = c, elements = script.elements,
-            onRevert = if (c.kind == "edit" && indexById.containsKey(c.elementId)) ({ vm.revert(c); message("Put back how it was") }) else null,
-            onSeen = { vm.markSeen(c) },
-            onDismiss = { openChange = null },
-        )
-    }
     SprintSummary()
 
     fun jump(id: Long) { sheet = null; mode = EditorMode.WRITE; vm.jumpTo(id) }
@@ -657,21 +608,7 @@ fun EditorScreen(scriptId: String, settings: AppSettings, onBack: () -> Unit, on
         )
         SheetKind.TITLE -> TitlePageEditor(script.titlePage, script.title, onDismiss = { sheet = null }, onSave = vm::setTitlePage)
         SheetKind.STATS -> StatsSheet(script, totalPages, sessionWords, onDismiss = { sheet = null })
-        SheetKind.CHANGES -> ChangesSheet(
-            changes = changes, elements = script.elements, myUid = vm.myUid,
-            isUnseen = { vm.isUnseen(it, seen) },
-            onOpen = { c ->
-                sheet = null
-                indexById[c.elementId]?.let { idx ->
-                    scope.launch { listState.animateScrollToItem((itemOf(idx) - 2).coerceAtLeast(0)) }
-                    openChange = c
-                }
-                if (c.uid == vm.myUid) openChange = null
-            },
-            onMarkAll = vm::markAllSeen,
-            onDismiss = { sheet = null },
-        )
-        SheetKind.COLLAB -> CollabSheet(script, vm, liveStatus, peers, onDismiss = { sheet = null }, onOpenSettings = { vm.flush(); onSettings() }, onMessage = ::message)
+        SheetKind.COLLAB -> CollabSheet(script, vm, onDismiss = { sheet = null }, onOpenSettings = { vm.flush(); onSettings() }, onMessage = ::message)
         SheetKind.BIBLE -> BibleSheet(
             script, ::sceneLabel, onDismiss = { sheet = null },
             onSaveCharacter = { p -> vm.updateExtras { it.withCharacter(p) } },
@@ -843,9 +780,7 @@ private fun ScriptPage(
     focusReq: FocusReq?,
     dimOthers: Boolean,
     actions: RowActions,
-    peerColors: Map<Long, Color>,
-    changeMarks: Map<Long, Color>,
-    onChangeTap: (Long) -> Unit,
+    authorColors: Map<Long, Color>,
     onTitleClick: () -> Unit,
     onAppend: () -> Unit,
     noteRanges: Map<Long, List<Pair<IntRange, Color>>> = emptyMap(),
@@ -906,9 +841,7 @@ private fun ScriptPage(
                         boldHeadings = settings.boldSceneHeadings,
                         focusReq = if (focusReq?.id == e.id) focusReq else null,
                         actions = actions,
-                        peerColor = peerColors[e.id],
-                        changeColor = changeMarks[e.id],
-                        onChangeTap = if (changeMarks.containsKey(e.id)) ({ onChangeTap(e.id) }) else null,
+                        authorColor = authorColors[e.id],
                         spellCheck = settings.spellCheck,
                         spellSkip = spellSkip,
                         dualSide = side,

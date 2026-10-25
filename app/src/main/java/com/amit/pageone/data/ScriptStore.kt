@@ -237,6 +237,7 @@ class ScriptStore(context: Context) {
                 if (e.color != 0) o.put("c", e.color)
                 if (e.synopsis.isNotEmpty()) o.put("s", e.synopsis)
                 if (e.orig != null) o.put("o", e.orig)
+                if (e.by != null) o.put("a", e.by).put("an", e.byName ?: "").put("at", e.at)
                 els.put(o)
             }
             val tp = s.titlePage
@@ -267,6 +268,9 @@ class ScriptStore(context: Context) {
                         color = e.optInt("c", 0),
                         synopsis = e.optString("s", ""),
                         orig = if (e.has("o")) e.optString("o") else null,
+                        by = if (e.has("a")) e.optString("a") else null,
+                        byName = if (e.has("an")) e.optString("an") else null,
+                        at = e.optLong("at"),
                     )
                 )
             }

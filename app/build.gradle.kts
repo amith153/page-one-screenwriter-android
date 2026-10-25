@@ -12,7 +12,7 @@ val keystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
-// Built-in live-sync server. Kept out of source control in collab.properties.
+// Optional film-still keys. Kept out of source control in collab.properties.
 val collabProps = Properties().apply {
     val f = rootProject.file("collab.properties")
     if (f.exists()) f.inputStream().use { load(it) }
@@ -30,12 +30,9 @@ android {
         applicationId = "com.amit.pageone"
         minSdk = 26          // Android 8.0+ — installs on almost every phone in use
         targetSdk = 36
-        versionCode = 12
-        versionName = "3.4"
+        versionCode = 13
+        versionName = "3.5"
 
-        resValue("string", "collab_project_id", collabProps.getProperty("projectId", ""))
-        resValue("string", "collab_api_key", collabProps.getProperty("apiKey", ""))
-        resValue("string", "collab_app_id", collabProps.getProperty("appId", ""))
         // Optional: a free TMDB API key (themoviedb.org → Settings → API) for daily film stills.
         resValue("string", "tmdb_key", collabProps.getProperty("tmdbKey", ""))
         // Optional: an OMDb key (omdbapi.com) — film details + posters as a fallback source.
@@ -96,11 +93,6 @@ dependencies {
     implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.extended)
-
-    // Live collaboration (configured at runtime from Settings — no google-services.json needed)
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.firestore)
-    implementation(libs.firebase.auth)
 
     // Google Drive backup (each user signs in with their own Google account)
     implementation(libs.play.services.auth)

@@ -12,7 +12,7 @@ Get the latest APK from the [Releases page](https://github.com/amith153/page-one
 2. When asked, allow "install unknown apps" for your browser or file manager.
 3. If Play Protect warns you, choose **More details, then Install anyway**. The app is not on the Play Store.
 
-The downloadable APK contains **no server keys**. Writing, planning, exporting to PDF, Final Draft and Fountain, goals and sprints, and **Wi-Fi sync with the desktop app and other phones** all work. Live co-writing with other people, Google Drive backup and daily film frames need a server and keys that you set up yourself (below). Your scripts stay on your devices.
+The downloadable APK contains **no server keys**. Writing, planning, exporting to PDF, Final Draft and Fountain, goals and sprints, and **Wi-Fi sync with the desktop app and other phones** all work. Google Drive backup and daily film frames need keys that you set up yourself (below). Your scripts stay on your devices.
 
 ## What it does
 
@@ -22,7 +22,7 @@ The downloadable APK contains **no server keys**. Writing, planning, exporting t
 - **Export**: PDF (Courier Prime, title page, watermark, revision marks), Final Draft `.fdx`, Fountain, plus Dropbox/OneDrive style linked copies.
 - **Keep going**: daily word goal, streak, writing year, sprints, deadlines, reminders, and a daily film frame and line.
 - **Sync** (built in, over Wi-Fi): Settings › Sync pairs this phone with the desktop app or another phone with a short code. Projects, daily words, streak, sprints and goal follow you. No account, no server, no keys.
-- **Co-writing** (needs your own server): live writing with other people using join codes.
+- **Write together**: pass `.pageone` drafts back and forth and merge them line by line. Every line is stamped with the name of the writer who last changed it; turn on **Show who wrote what** for a coloured bar beside each line.
 
 ## Build it yourself
 
@@ -36,16 +36,15 @@ cd page-one-screenwriter-android
 
 Optional features:
 
-1. **Live co-writing with other people**: create a free Firebase project (Firestore plus anonymous sign-in), copy `collab.properties.example` to `collab.properties` and fill in your project id, API key and app id. The Firestore rules and the full setup are in [docs/HISTORY.md](docs/HISTORY.md).
-2. **Film frames**: add free `tmdbKey` / `omdbKey` values to the same file.
-3. **Release signing**: copy `keystore.properties.example` to `keystore.properties` and point it at your own keystore, then `./gradlew assembleRelease`.
+1. **Film frames**: copy `collab.properties.example` to `collab.properties` and add free `tmdbKey` / `omdbKey` values.
+2. **Release signing**: copy `keystore.properties.example` to `keystore.properties` and point it at your own keystore, then `./gradlew assembleRelease`.
 
 `collab.properties`, `keystore.properties` and every `*.jks` are git-ignored. Never commit them. See [SECURITY.md](SECURITY.md).
 
 ## Project layout
 
 - `app/src/main/java/com/amit/pageone/core` is pure Kotlin (model, pagination, analysis, Fountain/FDX), unit-tested on the JVM.
-- `…/data`, `…/collab`, `…/io` hold storage, live sync and exports; `…/ui` is Jetpack Compose.
+- `…/data`, `…/collab`, `…/io` hold storage, Wi-Fi sync and exports; `…/ui` is Jetpack Compose.
 - The desktop app is a line-for-line port of `core`, so both lay out pages the same way.
 
 ## License

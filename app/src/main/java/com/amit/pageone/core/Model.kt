@@ -47,6 +47,10 @@ val SCENE_COLORS: List<Long> = listOf(
     0xFF4DD0E1, 0xFF6EA8FE, 0xFFB39DDB, 0xFFF48FB1, 0xFFA1887F,
 )
 
+/** A line taken from someone else's draft: if their file carries no stamp, credit it to them by name. */
+fun Element.credited(name: String, now: Long = System.currentTimeMillis()): Element =
+    if (by != null) this else copy(by = "guest:" + name.trim().lowercase(), byName = name, at = if (at != 0L) at else now)
+
 data class Element(
     val id: Long,
     val type: ElementType,
@@ -64,6 +68,10 @@ data class Element(
      * Lets a line go back to Dialogue/Action — by Undo, Backspace, Tab or Enter — as it was typed.
      */
     val orig: String? = null,
+    /** Who last changed this line: an install's random author id, the name it wrote under, and when. */
+    val by: String? = null,
+    val byName: String? = null,
+    val at: Long = 0L,
 ) {
     /** The text as the writer typed it (before any all-caps conversion). */
     val plain: String get() = if (orig != null && orig.uppercase() == text) orig else text

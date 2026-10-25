@@ -32,13 +32,6 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Live-collaboration invite links: pageone://join/K7QPX2MA -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="pageone" />
-            </intent-filter>
             <!-- Open .fountain / .fdx / .pageone files shared from other apps -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

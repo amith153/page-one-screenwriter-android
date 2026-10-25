@@ -36,11 +36,11 @@ object Merge {
             if (r != null) {
                 when {
                     same(l, r) -> keep[l.id] = l
-                    b != null && same(l, b) -> { keep[l.id] = r.copy(revision = maxOf(l.revision, r.revision)); changed++ }
+                    b != null && same(l, b) -> { keep[l.id] = r.credited(theirName).copy(revision = maxOf(l.revision, r.revision)); changed++ }
                     b != null && same(r, b) -> keep[l.id] = l
                     else -> {
                         keep[l.id] = l
-                        conflictNotes[l.id] = Element(ids.next(), ElementType.NOTE, "$theirName's version: ${r.text}")
+                        conflictNotes[l.id] = Element(ids.next(), ElementType.NOTE, "$theirName's version: ${r.text}").credited(theirName)
                         conflicts++
                     }
                 }
@@ -50,7 +50,7 @@ object Merge {
             }
         }
         val remoteOnly = remote.filter { it.id !in L && (B[it.id] == null || !same(it, B.getValue(it.id))) }
-        remoteOnly.forEach { keep[it.id] = it; added++ }
+        remoteOnly.forEach { keep[it.id] = it.credited(theirName); added++ }
 
         // Order: if we didn't reorder anything since the base but they did, follow theirs.
         val common = local.map { it.id }.filter { it in R }

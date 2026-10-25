@@ -222,9 +222,7 @@ fun ElementRow(
     boldHeadings: Boolean,
     focusReq: FocusReq?,
     actions: RowActions,
-    peerColor: Color? = null,
-    changeColor: Color? = null,
-    onChangeTap: (() -> Unit)? = null,
+    authorColor: Color? = null,
     spellCheck: Boolean = false,
     spellSkip: Set<String> = emptySet(),
     /** Dual dialogue: false = left speaker, true = right speaker, null = normal row. */
@@ -301,19 +299,12 @@ fun ElementRow(
         Modifier
             .fillMaxWidth()
             .background(if (dualSide != null) Color.Transparent else palette.paper)
-            .then(
-                if (changeColor != null) Modifier.drawBehind {
-                    drawRect(changeColor.copy(alpha = 0.10f))
-                    drawRect(changeColor, size = androidx.compose.ui.geometry.Size(4.dp.toPx(), size.height))
-                } else Modifier
-            )
             .alpha(if (dim) 0.28f else 1f)
             .padding(top = metrics.lineDp * spaceBefore),
     ) {
         // ---- left gutter: scene number, dual marker, scene colour ----
         Box(
-            Modifier.width(metrics.leftGutter)
-                .then(if (onChangeTap != null) Modifier.heightIn(min = metrics.lineDp * 1.5f).clickable(onClick = onChangeTap) else Modifier),
+            Modifier.width(metrics.leftGutter),
             contentAlignment = Alignment.TopEnd,
         ) {
             if (type == ElementType.SCENE_HEADING) {
@@ -332,10 +323,10 @@ fun ElementRow(
                     }
                 }
             }
-            if (peerColor != null) {
+            if (authorColor != null) {
                 Box(
                     Modifier.align(Alignment.TopStart).padding(start = 4.dp).width(4.dp).height(metrics.lineDp)
-                        .background(peerColor, RoundedCornerShape(2.dp))
+                        .background(authorColor, RoundedCornerShape(2.dp))
                 )
             }
             if (inDual) {

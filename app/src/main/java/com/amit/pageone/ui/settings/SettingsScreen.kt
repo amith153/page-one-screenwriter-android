@@ -150,7 +150,7 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit) {
             item { NotificationsSection(s, upd) }
             item { CloudSection() }
             item { SyncSection() }
-            item { CollaborationSection() }
+            item { CollaborationSection(settings, upd) }
             item {
                 Column(Modifier.padding(top = 24.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Page One 3.0", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -372,14 +372,14 @@ private fun SyncSection() {
     }
 }
 
-/** Collaboration: your display name. (The server panel exists only in debug builds — see src/debug.) */
+/** Collaboration: your display name, and whether lines show who wrote them. */
 @Composable
-private fun CollaborationSection() {
+private fun CollaborationSection(settings: AppSettings, upd: ((AppSettings) -> AppSettings) -> Unit) {
     val collab = AppGraph.collab
     val name by collab.name.collectAsState()
     Section("Collaboration") {
-        TextSetting("Your name", "Shown to co-writers next to your cursor", name) { collab.setName(it) }
-        ServerPanel()
+        TextSetting("Your name", "Stamped on every line you write, so co-writers can tell who wrote what", name) { collab.setName(it) }
+        Toggle("Show who wrote what", "A coloured bar beside each line, by the writer who last changed it", settings.showAuthors) { v -> upd { it.copy(showAuthors = v) } }
     }
 }
 

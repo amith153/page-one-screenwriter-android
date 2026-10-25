@@ -70,7 +70,7 @@ private val slides = listOf(
     Slide(Icons.Outlined.EditNote, "WRITE", "Industry format,\nwithout thinking about it", "Scene headings, cues and dialogue snap into place as you type. Script Doctor catches what slips through."),
     Slide(Icons.Outlined.AccountTree, "SHAPE", "See the whole story", "Index cards, beat templates with page targets, storylines, an X-ray of your pacing, a bible for every character and place."),
     Slide(Icons.Outlined.Lightbulb, "CAPTURE", "Never lose an idea", "Save a line, a scene or a voice memo from any app or your home screen — then drop it into a script when you're ready."),
-    Slide(Icons.Outlined.WorkOutline, "SHIP", "Ready for production", "Deadlines that keep you honest, locked pages and A-scenes, reports, sides, notes and live co-writing."),
+    Slide(Icons.Outlined.WorkOutline, "SHIP", "Ready for production", "Deadlines that keep you honest, locked pages and A-scenes, reports, sides, notes, and drafts you can pass to a co-writer."),
 )
 
 /** First run: four quick slides, then set a goal and a reminder. */

@@ -25,11 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import com.amit.pageone.collab.LiveSession
-import com.amit.pageone.collab.LiveStatus
-import com.amit.pageone.collab.Peer
 import com.amit.pageone.core.Merge
-import com.amit.pageone.data.Invite
 
 /** A request for a particular row to take focus with a given selection. */
 /** [focus] false = only scroll the line into view (Find), so typing stays where it is. */
@@ -118,19 +114,7 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
 
     private val stopHook: () -> Unit = { flush() }
 
-    // ------------------------------------------------------------------ collaboration state
-    private var live: LiveSession? = null
-    private var pushJob: Job? = null
-    private val _liveStatus = MutableStateFlow<LiveStatus?>(null)
-    val liveStatus: StateFlow<LiveStatus?> = _liveStatus.asStateFlow()
-    private val _peers = MutableStateFlow<List<Peer>>(emptyList())
-    val peers: StateFlow<List<Peer>> = _peers.asStateFlow()
-    private val _changes = MutableStateFlow<List<com.amit.pageone.collab.Change>>(emptyList())
-    val changes: StateFlow<List<com.amit.pageone.collab.Change>> = _changes.asStateFlow()
-    data class Seen(val all: Long, val elements: Map<Long, Long>)
-    private val _seen = MutableStateFlow(Seen(AppGraph.collab.seenAt(scriptId), AppGraph.collab.seenElements(scriptId)))
-    val seen: StateFlow<Seen> = _seen.asStateFlow()
-    val myUid: String? get() = live?.uid
+    // ------------------------------------------------------------------ messages
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
     fun consumeMessage() { _message.value = null }
@@ -145,7 +129,6 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
                 rederive(immediate = true)
                 // Open with the cursor in the last element
                 s.elements.lastOrNull()?.let { requestFocus(it.id, it.text.length) }
-                if (AppGraph.collab.isLive(scriptId)) startLive()
             }
         }
         // Re-paginate when layout-affecting settings change.
@@ -158,7 +141,6 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
 
     override fun onCleared() {
         AppGraph.stopHooks.remove(stopHook)
-        live?.stop(); live = null
         flush()
         super.onCleared()
     }
@@ -177,7 +159,7 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
         if (_focusReq.value?.seq == req.seq) _focusReq.value = null
     }
 
-    fun onFocused(id: Long, cursor: Int) { _focused.value = id; lastCursor = cursor; live?.setCursor(id) }
+    fun onFocused(id: Long, cursor: Int) { _focused.value = id; lastCursor = cursor }
     fun onCursor(cursor: Int) { lastCursor = cursor }
     fun clearFocus() { _focused.value = null }
 
@@ -187,7 +169,7 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
      * The single entry point for every edit. Handles undo history, revision marks,
      * word-goal tracking, re-pagination and autosave.
      */
-    private fun mutate(kind: Kind, typingId: Long? = null, f: (List<Element>) -> List<Element>) {
+    private fun mutate(kind: Kind, typingId: Long? = null, stamp: Boolean = true, f: (List<Element>) -> List<Element>) {
         val s = _script.value ?: return
         val old = s.elements
         var new = f(old)
@@ -207,16 +189,19 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
         val oldById = HashMap<Long, Element>(old.size * 2)
         old.forEach { oldById[it.id] = it }
         var delta = 0
-        val marked = if (s.revisionMode) ArrayList<Element>(new.size) else null
+        val marked = ArrayList<Element>(new.size)
         for (e in new) {
             val o = oldById[e.id]
             val changed = o == null || o.text != e.text || o.type != e.type || o.dual != e.dual
             if (changed && (o == null || o.text != e.text)) delta += Words.count(e.text) - (o?.let { Words.count(it.text) } ?: 0)
-            marked?.add(if (changed && e.revision != s.revisionLevel) e.copy(revision = s.revisionLevel) else e)
+            // Whoever changes a line is the one it is stamped with.
+            val edited = changed || (o != null && (o.color != e.color || o.synopsis != e.synopsis))
+            val stamped = if (stamp && edited) AppGraph.collab.stamp(e, now) else e
+            marked.add(if (s.revisionMode && changed && stamped.revision != s.revisionLevel) stamped.copy(revision = s.revisionLevel) else stamped)
         }
         if (delta > 0) { _sessionWords.value += delta; AppGraph.goals.add(delta) }
 
-        _script.value = s.copy(elements = marked ?: new, modifiedAt = now)
+        _script.value = s.copy(elements = marked, modifiedAt = now)
         _canUndo.value = undoStack.isNotEmpty(); _canRedo.value = redoStack.isNotEmpty()
         afterChange()
     }
@@ -228,150 +213,6 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
         saveJob?.cancel()
         saveJob = viewModelScope.launch { delay(1200); save() }
         if (_find.value.open && _find.value.query.isNotEmpty()) refreshMatches(keepIndex = true)
-        schedulePush()
-    }
-
-    // ------------------------------------------------------------------ live collaboration
-
-    private fun schedulePush() {
-        val l = live ?: return
-        pushJob?.cancel()
-        pushJob = viewModelScope.launch {
-            delay(350)
-            val s = _script.value ?: return@launch
-            l.push(s.elements, s.title, s.titlePage)
-            l.pushExtras(sharedExtras(s), s.extras.comments)
-        }
-    }
-
-    private fun sharedExtras(s: Script) = com.amit.pageone.data.ExtrasCodec.encode(s.extras, includeComments = false, includeLocalMedia = false).toString()
-
-    private fun startLive() {
-        val cfg = AppGraph.collab.server.value
-        if (!cfg.isValid || live != null) {
-            if (!cfg.isValid) _liveStatus.value = LiveStatus.Error("Live co-writing isn't available in this copy of Page One.")
-            return
-        }
-        val c = AppGraph.collab
-        val session = LiveSession(
-            context = AppGraph.context,
-            config = cfg,
-            scriptId = scriptId,
-            myName = c.displayName(),
-            myColor = c.colorFor(c.displayName() + scriptId),
-            scope = viewModelScope,
-            hasLocalPending = { pushJob?.isActive == true },
-            onRemoteElements = ::applyRemoteElements,
-            onRemoteMeta = ::applyRemoteMeta,
-            onRemoteExtras = ::applyRemoteExtras,
-            onRemoteComments = ::applyRemoteComments,
-        )
-        live = session
-        viewModelScope.launch { session.status.collect { _liveStatus.value = it } }
-        viewModelScope.launch { session.peers.collect { _peers.value = it } }
-        viewModelScope.launch { session.changes.collect { _changes.value = it } }
-        session.start { remoteHad ->
-            if (!remoteHad) {
-                val s = _script.value ?: return@start
-                session.push(s.elements, s.title, s.titlePage, log = false) // first upload isn't "a change"
-                session.pushExtras(sharedExtras(s), s.extras.comments)
-            }
-        }
-    }
-
-    /** Is this change something a co-writer did that you haven't looked at yet? */
-    fun isUnseen(c: com.amit.pageone.collab.Change, s: Seen = _seen.value): Boolean {
-        val me = live?.uid ?: return false
-        return c.uid != me && c.at > s.all && c.at > (s.elements[c.elementId] ?: 0L)
-    }
-
-    fun markAllSeen() {
-        val t = System.currentTimeMillis()
-        AppGraph.collab.setSeenAt(scriptId, t); AppGraph.collab.setSeenElements(scriptId, emptyMap())
-        _seen.value = Seen(t, emptyMap())
-    }
-
-    fun markSeen(c: com.amit.pageone.collab.Change) {
-        val m = _seen.value.elements + (c.elementId to maxOf(c.at, _seen.value.elements[c.elementId] ?: 0L))
-        AppGraph.collab.setSeenElements(scriptId, m)
-        _seen.value = _seen.value.copy(elements = m)
-    }
-
-    /** Put an element back the way it read before a co-writer's change. */
-    fun revert(c: com.amit.pageone.collab.Change): Boolean {
-        val i = indexOf(c.elementId)
-        if (i < 0 || c.kind != "edit") return false
-        val e = elements[i]
-        mutate(Kind.STRUCTURE) { list -> list.toMutableList().also { it[i] = e.copy(text = c.before) } }
-        markSeen(c)
-        return true
-    }
-
-    /** Short join code for this shared script (created on first use). */
-    suspend fun joinCode(): String? {
-        val s = _script.value ?: return null
-        val cfg = AppGraph.collab.server.value
-        return runCatching { com.amit.pageone.collab.Hub.codeFor(AppGraph.context, cfg, scriptId, s.title, AppGraph.collab.displayName()) }
-            .onFailure { _message.value = "Couldn't create a join code: ${it.message}" }
-            .getOrNull()
-    }
-
-    /** Turn on live co-editing for this script (uploads it if it isn't shared yet). */
-    fun goLive() {
-        AppGraph.collab.setLive(scriptId, true)
-        startLive()
-    }
-
-    fun stopLive() {
-        live?.stop(); live = null
-        AppGraph.collab.setLive(scriptId, false)
-        _liveStatus.value = null; _peers.value = emptyList()
-    }
-
-
-    private fun applyRemoteElements(list: List<Element>) {
-        val s = _script.value ?: return
-        if (list == s.elements) return
-        ids.ensureAbove(0)
-        _script.value = s.copy(elements = list, modifiedAt = System.currentTimeMillis())
-        redoStack.clear(); _canRedo.value = false
-        lastTypingId = null
-        dirty = true
-        _saveState.value = SaveState.PENDING
-        rederive()
-        saveJob?.cancel()
-        saveJob = viewModelScope.launch { delay(1200); save() }
-    }
-
-    private fun applyRemoteMeta(title: String, tp: TitlePage) {
-        val s = _script.value ?: return
-        if (s.titlePage == tp && s.title == title) return
-        _script.value = s.copy(title = title.ifBlank { s.title }, titlePage = tp)
-        dirty = true
-        saveJob?.cancel()
-        saveJob = viewModelScope.launch { delay(1200); save() }
-    }
-
-    private fun applyRemoteExtras(json: String) {
-        val s = _script.value ?: return
-        val remote = runCatching { com.amit.pageone.data.ExtrasCodec.decode(org.json.JSONObject(json)) }.getOrNull() ?: return
-        val merged = com.amit.pageone.data.ExtrasCodec.mergeRemote(s.extras, remote)
-        if (merged == s.extras) return
-        val relock = merged.lock != s.extras.lock
-        _script.value = s.copy(extras = merged)
-        dirty = true
-        if (relock) rederive(immediate = true)
-        saveJob?.cancel()
-        saveJob = viewModelScope.launch { delay(1200); save() }
-    }
-
-    private fun applyRemoteComments(list: List<com.amit.pageone.core.Comment>) {
-        val s = _script.value ?: return
-        if (list == s.extras.comments) return
-        _script.value = s.copy(extras = s.extras.copy(comments = list))
-        dirty = true
-        saveJob?.cancel()
-        saveJob = viewModelScope.launch { delay(1200); save() }
     }
 
     // ------------------------------------------------------------------ story data (bible, beats, threads, notes, lock)
@@ -471,7 +312,7 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
         }
         val base = AppGraph.collab.loadBase(s.id)
         val r = Merge.threeWay(base?.elements, s.elements, remote.elements, ids, sender.ifBlank { "Co-writer" })
-        mutate(Kind.STRUCTURE) { r.elements }
+        mutate(Kind.STRUCTURE, stamp = false) { r.elements }
         if (base != null && base.titlePage == s.titlePage && remote.titlePage != s.titlePage) setTitlePage(remote.titlePage)
         _script.value?.let { AppGraph.collab.saveBase(it) }
         _message.value = if (r.total == 0) "Already up to date with $sender"
@@ -908,7 +749,7 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
     }
 
     fun clearRevisionMarks() {
-        mutate(Kind.STRUCTURE) { list -> list.map { if (it.revision != 0) it.copy(revision = 0) else it } }
+        mutate(Kind.STRUCTURE, stamp = false) { list -> list.map { if (it.revision != 0) it.copy(revision = 0) else it } }
     }
 
     // ------------------------------------------------------------------ find & replace
@@ -1002,7 +843,7 @@ class EditorViewModel(private val scriptId: String) : ViewModel() {
         val old = store.loadVersion(v) ?: return@launch
         store.saveVersion(cur, "Before restore", _derived.value?.pagination?.pageCount ?: 0, settings.versionsToKeep)
         ids.ensureAbove(old.nextId)
-        mutate(Kind.STRUCTURE) { old.elements }
+        mutate(Kind.STRUCTURE, stamp = false) { old.elements }
         _script.value = _script.value?.copy(titlePage = old.titlePage)
         _versions.value = store.versions(scriptId)
     }

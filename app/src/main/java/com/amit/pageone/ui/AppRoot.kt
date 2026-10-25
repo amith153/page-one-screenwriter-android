@@ -35,8 +35,6 @@ fun AppRoot(
     settings: AppSettings,
     pendingImport: Uri?,
     onImportConsumed: () -> Unit,
-    pendingJoin: String?,
-    onJoinConsumed: () -> Unit,
     keepScreenOn: (Boolean) -> Unit,
     /** From a notification or widget: "inbox" or "script:<id>". */
     pendingOpen: String? = null,
@@ -85,20 +83,6 @@ fun AppRoot(
         }
     }
 
-    LaunchedEffect(pendingJoin) {
-        val text = pendingJoin ?: return@LaunchedEffect
-        onJoinConsumed()
-        val inv = resolveInvite(ctx, text)
-        if (inv == null) {
-            android.widget.Toast.makeText(ctx, "That join code wasn't found — check it and try again", android.widget.Toast.LENGTH_LONG).show()
-            return@LaunchedEffect
-        }
-        stores.values.forEach { it.clear() }; stores.clear()
-        val id = AppGraph.collab.join(inv)
-        android.widget.Toast.makeText(ctx, "Joining “${inv.title}” with ${inv.from}…", android.widget.Toast.LENGTH_SHORT).show()
-        stack = listOf("library", "editor/$id")
-    }
-
     LaunchedEffect(pendingOpen) {
         val p = pendingOpen ?: return@LaunchedEffect
         onOpenConsumed()
@@ -125,14 +109,6 @@ fun AppRoot(
                 onOpen = { id -> push("editor/$id") },
                 onSettings = { push("settings") },
                 onInbox = { push("inbox") },
-                onJoin = { code ->
-                    scope.launch {
-                        android.widget.Toast.makeText(ctx, "Joining…", android.widget.Toast.LENGTH_SHORT).show()
-                        val inv = resolveInvite(ctx, code)
-                        if (inv == null) android.widget.Toast.makeText(ctx, "That join code wasn't found — check it and try again", android.widget.Toast.LENGTH_LONG).show()
-                        else push("editor/" + AppGraph.collab.join(inv))
-                    }
-                },
             )
             r.startsWith("editor/") -> {
                 val vmStore = stores.getOrPut(r) { ViewModelStore() }
@@ -150,10 +126,4 @@ fun AppRoot(
             r == "inbox" -> com.amit.pageone.ui.library.InboxScreen(onBack = { pop() }, onOpenScript = { id -> stack = listOf("library", "editor/$id") })
         }
     }
-}
-
-/** Accepts a short join code (K7QP-X2MA), a pageone://join/ link, or a whole message containing one. */
-private suspend fun resolveInvite(ctx: android.content.Context, text: String): com.amit.pageone.data.Invite? {
-    val code = com.amit.pageone.collab.Hub.findCode(text) ?: return null
-    return runCatching { com.amit.pageone.collab.Hub.resolve(ctx, AppGraph.collab.server.value, code) }.getOrNull()
 }

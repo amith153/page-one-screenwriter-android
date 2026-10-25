@@ -115,7 +115,7 @@ private enum class Sort(val label: String) { RECENT("Recent"), TITLE("Title"), L
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun LibraryScreen(settings: AppSettings, onOpen: (String) -> Unit, onSettings: () -> Unit, onJoin: (String) -> Unit, onInbox: () -> Unit = {}) {
+fun LibraryScreen(settings: AppSettings, onOpen: (String) -> Unit, onSettings: () -> Unit, onInbox: () -> Unit = {}) {
     val store = AppGraph.store
     val library by store.library.collectAsState()
     val today by AppGraph.goals.todayWords.collectAsState()
@@ -133,8 +133,6 @@ fun LibraryScreen(settings: AppSettings, onOpen: (String) -> Unit, onSettings: (
     var sprinting by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<ScriptMeta?>(null) }
     var deleteTarget by remember { mutableStateOf<ScriptMeta?>(null) }
-    var joining by remember { mutableStateOf(false) }
-    val liveIds by AppGraph.collab.liveScripts.collectAsState()
 
     LaunchedEffect(Unit) { store.refresh(); AppGraph.ideas.reload() }
 
@@ -215,7 +213,6 @@ fun LibraryScreen(settings: AppSettings, onOpen: (String) -> Unit, onSettings: (
                         QuickAction(Icons.Outlined.Timer, "Sprint", Modifier.width(76.dp)) { sprinting = true }
                         QuickAction(Icons.Outlined.Inbox, "Ideas", Modifier.width(76.dp), badge = waiting.size, onClick = onInbox)
                         QuickAction(Icons.Outlined.FileOpen, "Import", Modifier.width(76.dp)) { importer.launch(arrayOf("*/*")) }
-                        QuickAction(Icons.Outlined.GroupAdd, "Join", Modifier.width(76.dp)) { joining = true }
                     }
                     SprintBanner(Modifier.clip(RoundedCornerShape(16.dp)))
                     Spacer(Modifier.height(10.dp))
@@ -275,7 +272,7 @@ fun LibraryScreen(settings: AppSettings, onOpen: (String) -> Unit, onSettings: (
             items(shown, key = { it.id }) { m ->
                 var menu by remember { mutableStateOf(false) }
                 Box {
-                    ScriptCard(m, live = m.id in liveIds, onClick = { onOpen(m.id) }, onLongClick = { menu = true })
+                    ScriptCard(m, onClick = { onOpen(m.id) }, onLongClick = { menu = true })
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("Rename") }, leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, null) }, onClick = { menu = false; renameTarget = m })
                         DropdownMenuItem(text = { Text("Duplicate") }, leadingIcon = { Icon(Icons.Outlined.ContentCopy, null) }, onClick = {
@@ -329,21 +326,6 @@ fun LibraryScreen(settings: AppSettings, onOpen: (String) -> Unit, onSettings: (
                 }) { Text("Save") }
             },
             dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Cancel") } },
-        )
-    }
-    if (joining) {
-        var code by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { joining = false },
-            title = { Text("Join a shared script") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Type the 8-letter join code your co-writer sent you — or paste their whole message.", style = MaterialTheme.typography.bodyMedium)
-                    OutlinedTextField(value = code, onValueChange = { code = it }, minLines = 2, placeholder = { Text("K7QP-X2MA") }, modifier = Modifier.fillMaxWidth())
-                }
-            },
-            confirmButton = { TextButton(onClick = { joining = false; onJoin(code) }, enabled = com.amit.pageone.collab.Hub.findCode(code) != null) { Text("Join") } },
-            dismissButton = { TextButton(onClick = { joining = false }) { Text("Cancel") } },
         )
     }
     deleteTarget?.let { m ->
@@ -473,7 +455,7 @@ private fun WeekBars(days: List<Pair<String, Int>>, today: Int, goal: Int, modif
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ScriptCard(m: ScriptMeta, live: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun ScriptCard(m: ScriptMeta, onClick: () -> Unit, onLongClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val brand = LocalBrand.current
     val tint = if (m.coverColor in 1 until SCENE_COLORS.size) Color(SCENE_COLORS[m.coverColor]) else cs.primary
@@ -490,7 +472,6 @@ private fun ScriptCard(m: ScriptMeta, live: Boolean, onClick: () -> Unit, onLong
             ) {
                 Row(Modifier.align(Alignment.TopEnd).zIndex(2f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (m.locked) Badge("LOCKED", Icons.Outlined.Lock)
-                    if (live) Badge("LIVE", null, dot = Color(0xFF3FBF7F))
                 }
                 // The cover: a sheet of paper with the title in Courier, slightly lifted.
                 Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFFFBFAF7), shadowElevation = 6.dp, modifier = Modifier.fillMaxSize().padding(top = 6.dp, start = 4.dp, end = 4.dp)) {

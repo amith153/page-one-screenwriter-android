@@ -29,8 +29,6 @@ class MainActivity : ComponentActivity() {
     /** A file (fountain / fdx) handed to us by another app, waiting to be imported. */
     var pendingImport by mutableStateOf<Uri?>(null)
 
-    /** A live-collaboration invite (code or link) waiting to be joined. */
-    var pendingJoin by mutableStateOf<String?>(null)
 
     /** A notification or widget asked to open the inbox ("inbox") or a script ("script:<id>"). */
     var pendingOpen by mutableStateOf<String?>(null)
@@ -66,8 +64,6 @@ class MainActivity : ComponentActivity() {
                     settings = settings,
                     pendingImport = pendingImport,
                     onImportConsumed = { pendingImport = null },
-                    pendingJoin = pendingJoin,
-                    onJoinConsumed = { pendingJoin = null },
                     pendingOpen = pendingOpen,
                     onOpenConsumed = { pendingOpen = null },
                     keepScreenOn = { on ->
@@ -134,10 +130,6 @@ class MainActivity : ComponentActivity() {
         intent ?: return
         intent.getStringExtra(com.amit.pageone.data.Notifier.EXTRA_OPEN_SCRIPT)?.let { pendingOpen = "script:$it"; return }
         intent.getStringExtra(com.amit.pageone.data.Notifier.EXTRA_OPEN)?.let { pendingOpen = it; return }
-        val data = intent.data
-        if (intent.action == Intent.ACTION_VIEW && data?.scheme == "pageone") { pendingJoin = data.toString(); return }
-        val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
-        if (intent.action == Intent.ACTION_SEND && sharedText != null && sharedText.contains("P1-")) { pendingJoin = sharedText; return }
         val uri: Uri? = when (intent.action) {
             Intent.ACTION_VIEW -> intent.data
             Intent.ACTION_SEND -> if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)

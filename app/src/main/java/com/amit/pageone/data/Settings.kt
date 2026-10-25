@@ -86,6 +86,8 @@ data class AppSettings(
     val versionsToKeep: Int = 30,
     val defaultAuthor: String = "",
     // Notifications
+    /** A coloured bar beside each line, by who last changed it. */
+    val showAuthors: Boolean = false,
     val dailyReminder: Boolean = false,
     val reminderHour: Int = 19,
     val reminderMinute: Int = 0,
@@ -169,6 +171,7 @@ class SettingsStore(context: Context) {
             autoVersionMinutes = p.getInt("autoVersionMinutes", d.autoVersionMinutes),
             versionsToKeep = p.getInt("versionsToKeep", d.versionsToKeep),
             defaultAuthor = p.getString("defaultAuthor", d.defaultAuthor) ?: "",
+            showAuthors = p.getBoolean("showAuthors", d.showAuthors),
             dailyReminder = p.getBoolean("dailyReminder", d.dailyReminder),
             reminderHour = p.getInt("reminderHour", d.reminderHour),
             reminderMinute = p.getInt("reminderMinute", d.reminderMinute),
@@ -227,6 +230,7 @@ class SettingsStore(context: Context) {
             .putInt("autoVersionMinutes", s.autoVersionMinutes)
             .putInt("versionsToKeep", s.versionsToKeep)
             .putString("defaultAuthor", s.defaultAuthor)
+            .putBoolean("showAuthors", s.showAuthors)
             .putBoolean("dailyReminder", s.dailyReminder)
             .putInt("reminderHour", s.reminderHour)
             .putInt("reminderMinute", s.reminderMinute)
@@ -330,7 +334,7 @@ object AppGraph {
     lateinit var media: MediaFiles
     lateinit var context: Context
     lateinit var sync: com.amit.pageone.collab.SyncSpace
-    /** The script open in the editor right now, if any (sync leaves it to its live session). */
+    /** The script open in the editor right now, if any (sync leaves it alone). */
     @Volatile var openScriptId: String? = null
     private var ready = false
 
